@@ -217,6 +217,35 @@ describe("handleControlUiHttpRequest", () => {
     }
   });
 
+  it("returns avatar metadata for local avatars", () => {
+    const { res, end, handled } = runAvatarRequest({
+      url: "/avatar/gaia?meta=1",
+      method: "GET",
+      resolveAvatar: () => ({ kind: "local", filePath: "/tmp/gaia.png" }),
+    });
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(String(end.mock.calls[0]?.[0] ?? ""))).toEqual({
+      avatarUrl: "/avatar/gaia",
+    });
+  });
+
+  it("returns avatar metadata under basePath", () => {
+    const { res, end, handled } = runAvatarRequest({
+      url: "/openclaw/avatar/gaia?meta=1",
+      method: "GET",
+      basePath: "/openclaw",
+      resolveAvatar: () => ({ kind: "local", filePath: "C:\\Users\\ck\\gaia\\avatar.png" }),
+    });
+
+    expect(handled).toBe(true);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(String(end.mock.calls[0]?.[0] ?? ""))).toEqual({
+      avatarUrl: "/openclaw/avatar/gaia",
+    });
+  });
+
   it("rejects avatar symlink paths from resolver", async () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-avatar-http-link-"));
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-avatar-http-outside-"));

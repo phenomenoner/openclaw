@@ -23,6 +23,15 @@ describe("avatar policy", () => {
     expect(isPathWithinRoot(root, path.resolve("/tmp/root/../outside.png"))).toBe(false);
   });
 
+  it("accepts Windows namespace-prefixed roots when target is the same path", () => {
+    const root = "\\\\?\\C:\\Users\\ck\\workspace\\gaia";
+    const inRoot = "C:\\Users\\ck\\workspace\\gaia\\avatars\\gaia.png";
+    const outside = "C:\\Users\\ck\\workspace\\other\\gaia.png";
+
+    expect(isPathWithinRoot(root, inRoot)).toBe(true);
+    expect(isPathWithinRoot(root, outside)).toBe(false);
+  });
+
   it("detects avatar-like path strings", () => {
     expect(looksLikeAvatarPath("avatars/openclaw.svg")).toBe(true);
     expect(looksLikeAvatarPath("openclaw.webp")).toBe(true);

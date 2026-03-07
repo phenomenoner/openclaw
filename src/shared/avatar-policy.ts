@@ -62,12 +62,32 @@ export function isWorkspaceRelativeAvatarPath(value: string): boolean {
   return true;
 }
 
+function looksLikeWindowsPath(value: string): boolean {
+  return value.includes("\\") || WINDOWS_ABS_RE.test(value) || value.startsWith("\\\\");
+}
+
+function stripWindowsNamespacePrefix(value: string): string {
+  const uncMatch = /^\\\\\?\\unc\\(.+)$/i.exec(value);
+  if (uncMatch) {
+    return `\\\\${uncMatch[1]}`;
+  }
+  const genericMatch = /^\\\\\?\\(.+)$/i.exec(value);
+  if (genericMatch) {
+    return genericMatch[1];
+  }
+  return value;
+}
+
 export function isPathWithinRoot(rootDir: string, targetPath: string): boolean {
-  const relative = path.relative(rootDir, targetPath);
+  const useWin32 = looksLikeWindowsPath(rootDir) || looksLikeWindowsPath(targetPath);
+  const pathApi = useWin32 ? path.win32 : path;
+  const root = useWin32 ? stripWindowsNamespacePrefix(rootDir) : rootDir;
+  const target = useWin32 ? stripWindowsNamespacePrefix(targetPath) : targetPath;
+  const relative = pathApi.relative(root, target);
   if (relative === "") {
     return true;
   }
-  return !relative.startsWith("..") && !path.isAbsolute(relative);
+  return !relative.startsWith("..") && !pathApi.isAbsolute(relative);
 }
 
 export function looksLikeAvatarPath(value: string): boolean {
