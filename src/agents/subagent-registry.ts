@@ -9,6 +9,7 @@ import {
 } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
 import { onAgentEvent } from "../infra/agent-events.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
 import { resetAnnounceQueuesForTests } from "./subagent-announce-queue.js";
@@ -386,6 +387,13 @@ async function completeSubagentRun(params: {
   startSubagentAnnounceCleanupFlow(params.runId, entry);
 }
 
+function resolveWakeParentOnCompletion(entry: SubagentRunRecord): boolean {
+  return (
+    parseAgentSessionKey(entry.requesterSessionKey) != null &&
+    entry.expectsCompletionMessage !== true
+  );
+}
+
 function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecord): boolean {
   if (!beginSubagentCleanup(runId)) {
     return false;
@@ -407,6 +415,7 @@ function startSubagentAnnounceCleanupFlow(runId: string, entry: SubagentRunRecor
     outcome: entry.outcome,
     spawnMode: entry.spawnMode,
     expectsCompletionMessage: entry.expectsCompletionMessage,
+    wakeParentOnCompletion: resolveWakeParentOnCompletion(entry),
   })
     .then((didAnnounce) => {
       void finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
