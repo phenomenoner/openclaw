@@ -14,11 +14,7 @@ import { createBoundDeliveryRouter } from "../infra/outbound/bound-delivery-rout
 import type { ConversationRef } from "../infra/outbound/session-binding-service.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
-import {
-  normalizeAccountId,
-  normalizeMainKey,
-  scopedHeartbeatWakeOptions,
-} from "../routing/session-key.js";
+import { normalizeAccountId, normalizeMainKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
 import {
@@ -1443,11 +1439,10 @@ export async function runSubagentAnnounceFlow(params: {
         contextKey: `subagent-completion:${announceId}`,
       });
       if (queued) {
-        requestHeartbeatNow(
-          scopedHeartbeatWakeOptions(targetRequesterSessionKey, {
-            reason: `subagent:${announceType}:completion`,
-          }),
-        );
+        requestHeartbeatNow({
+          sessionKey: targetRequesterSessionKey,
+          reason: `subagent:${announceType}:completion`,
+        });
       }
     }
     if (!delivery.delivered && delivery.path === "direct" && delivery.error) {
