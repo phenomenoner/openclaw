@@ -9,10 +9,16 @@ import {
   resolveStorePath,
 } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
+import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
 import { createBoundDeliveryRouter } from "../infra/outbound/bound-delivery-router.js";
 import type { ConversationRef } from "../infra/outbound/session-binding-service.js";
+import { enqueueSystemEvent } from "../infra/system-events.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
-import { normalizeAccountId, normalizeMainKey } from "../routing/session-key.js";
+import {
+  normalizeAccountId,
+  normalizeMainKey,
+  scopedHeartbeatWakeOptions,
+} from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
 import { extractTextFromChatContent } from "../shared/chat-content.js";
 import {
@@ -1119,6 +1125,13 @@ export async function runSubagentAnnounceFlow(params: {
   announceType?: SubagentAnnounceType;
   expectsCompletionMessage?: boolean;
   spawnMode?: SpawnSubagentMode;
+  wakeOnDescendantSettle?: boolean;
+  /**
+   * Opt-in parent/requester wake after settled completion announce delivery.
+   * Unlike wakeOnDescendantSettle (child re-entry), this wakes the requester
+   * session so it can continue follow-up orchestration work.
+   */
+  wakeParentOnCompletion?: boolean;
   signal?: AbortSignal;
   bestEffortDeliver?: boolean;
 }): Promise<boolean> {
@@ -1422,6 +1435,20 @@ export async function runSubagentAnnounceFlow(params: {
       didAnnounce = false;
     } else {
       didAnnounce = delivery.delivered;
+    }
+    if (params.wakeParentOnCompletion === true && didAnnounce) {
+      const wakeText = `Subagent completed: ${taskLabel} (${outcome.status})`;
+      const queued = enqueueSystemEvent(wakeText, {
+        sessionKey: targetRequesterSessionKey,
+        contextKey: `subagent-completion:${announceId}`,
+      });
+      if (queued) {
+        requestHeartbeatNow(
+          scopedHeartbeatWakeOptions(targetRequesterSessionKey, {
+            reason: `subagent:${announceType}:completion`,
+          }),
+        );
+      }
     }
     if (!delivery.delivered && delivery.path === "direct" && delivery.error) {
       defaultRuntime.error?.(
