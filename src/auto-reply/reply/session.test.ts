@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearBootstrapSnapshot } from "../../agents/bootstrap-cache.js";
 import { buildModelAliasIndex } from "../../agents/model-selection.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -15,6 +16,10 @@ import { initSessionState } from "./session.js";
 // Perf: session-store locks are exercised elsewhere; most session tests don't need FS lock files.
 vi.mock("../../agents/session-write-lock.js", () => ({
   acquireSessionWriteLock: async () => ({ release: async () => {} }),
+}));
+
+vi.mock("../../agents/bootstrap-cache.js", () => ({
+  clearBootstrapSnapshot: vi.fn(),
 }));
 
 vi.mock("../../agents/model-catalog.js", () => ({
@@ -1104,6 +1109,42 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       }),
     );
     archiveSpy.mockRestore();
+  });
+
+  it("clears the bootstrap snapshot when /new starts a new session", async () => {
+    vi.mocked(clearBootstrapSnapshot).mockClear();
+    const storePath = await createStorePath("openclaw-reset-clears-bootstrap-");
+    const sessionKey = "agent:main:telegram:dm:user-bootstrap-reset";
+    await seedSessionStoreWithOverrides({
+      storePath,
+      sessionKey,
+      sessionId: "existing-session-bootstrap",
+      overrides: { verboseLevel: "on" },
+    });
+
+    const cfg = {
+      session: { store: storePath, idleMinutes: 999 },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "/new",
+        RawBody: "/new",
+        CommandBody: "/new",
+        From: "user-bootstrap-reset",
+        To: "bot",
+        ChatType: "direct",
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.resetTriggered).toBe(true);
+    expect(clearBootstrapSnapshot).toHaveBeenCalledWith(sessionKey);
   });
 
   it("idle-based new session does NOT preserve overrides (no entry to read)", async () => {

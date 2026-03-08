@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import path from "node:path";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { clearBootstrapSnapshot } from "../../agents/bootstrap-cache.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import {
@@ -379,6 +380,10 @@ export async function initSessionState(params: {
   });
   sessionEntry = resolvedSessionFile.sessionEntry;
   if (isNewSession) {
+    // Bootstrap files are cached per sessionKey, so a new session on the same
+    // chat must evict the old snapshot before the next run rebuilds prompt
+    // context. Otherwise /new or /reset can inherit stale AGENTS/SOUL/etc.
+    clearBootstrapSnapshot(sessionKey);
     sessionEntry.compactionCount = 0;
     sessionEntry.memoryFlushCompactionCount = undefined;
     sessionEntry.memoryFlushAt = undefined;
