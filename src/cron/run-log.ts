@@ -2,7 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { parseByteSize } from "../cli/parse-bytes.js";
 import type { CronConfig } from "../config/types.cron.js";
-import type { CronDeliveryStatus, CronRunStatus, CronRunTelemetry } from "./types.js";
+import type {
+  CronDeliveryStatus,
+  CronRunProvenance,
+  CronRunStatus,
+  CronRunTelemetry,
+  CronRunTrigger,
+} from "./types.js";
 
 export type CronRunLogEntry = {
   ts: number;
@@ -16,6 +22,7 @@ export type CronRunLogEntry = {
   deliveryError?: string;
   sessionId?: string;
   sessionKey?: string;
+  provenance?: CronRunProvenance;
   runAtMs?: number;
   durationMs?: number;
   nextRunAtMs?: number;
@@ -238,6 +245,55 @@ function normalizeDeliveryStatuses(opts?: {
   return null;
 }
 
+function normalizeRunProvenanceTrigger(input: unknown): CronRunTrigger | null {
+  if (
+    input === "scheduler" ||
+    input === "manual" ||
+    input === "api" ||
+    input === "debug" ||
+    input === "unknown"
+  ) {
+    return input;
+  }
+  return null;
+}
+
+function normalizeOptionalProvenanceText(input: unknown): string | null | undefined {
+  if (input === null) {
+    return null;
+  }
+  if (typeof input !== "string") {
+    return undefined;
+  }
+  const trimmed = input.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function parseRunProvenance(input: unknown): CronRunProvenance | undefined {
+  if (!input || typeof input !== "object") {
+    return undefined;
+  }
+  const raw = input as Record<string, unknown>;
+  const trigger = normalizeRunProvenanceTrigger(raw.trigger);
+  if (!trigger) {
+    return undefined;
+  }
+  const requestedAtMs =
+    typeof raw.requestedAtMs === "number" && Number.isFinite(raw.requestedAtMs)
+      ? raw.requestedAtMs
+      : undefined;
+  const requestedBy = normalizeOptionalProvenanceText(raw.requestedBy);
+  const actorSession = normalizeOptionalProvenanceText(raw.actorSession);
+  const actorSessionKey = normalizeOptionalProvenanceText(raw.actorSessionKey);
+  return {
+    trigger,
+    requestedAtMs,
+    requestedBy,
+    actorSession,
+    actorSessionKey,
+  };
+}
+
 function parseAllRunLogEntries(raw: string, opts?: { jobId?: string }): CronRunLogEntry[] {
   const jobId = opts?.jobId?.trim() || undefined;
   if (!raw.trim()) {
@@ -281,6 +337,7 @@ function parseAllRunLogEntries(raw: string, opts?: { jobId?: string }): CronRunL
         runAtMs: obj.runAtMs,
         durationMs: obj.durationMs,
         nextRunAtMs: obj.nextRunAtMs,
+        provenance: parseRunProvenance(obj.provenance),
         model: typeof obj.model === "string" && obj.model.trim() ? obj.model : undefined,
         provider:
           typeof obj.provider === "string" && obj.provider.trim() ? obj.provider : undefined,

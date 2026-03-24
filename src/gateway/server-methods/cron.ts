@@ -4,7 +4,7 @@ import {
   readCronRunLogEntriesPageAll,
   resolveCronRunLogPath,
 } from "../../cron/run-log.js";
-import type { CronJobCreate, CronJobPatch } from "../../cron/types.js";
+import type { CronJobCreate, CronJobPatch, CronRunProvenance } from "../../cron/types.js";
 import { validateScheduleTimestamp } from "../../cron/validate-timestamp.js";
 import {
   ErrorCodes,
@@ -20,6 +20,31 @@ import {
   validateWakeParams,
 } from "../protocol/index.js";
 import type { GatewayRequestHandlers } from "./types.js";
+
+function trimToNonEmptyString(input: unknown): string | undefined {
+  if (typeof input !== "string") {
+    return undefined;
+  }
+  const trimmed = input.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function buildApiRunProvenance(params: {
+  client: { connId?: string; connect?: { client?: { id?: string }; role?: string } } | null;
+}): CronRunProvenance {
+  const requestedBy =
+    trimToNonEmptyString(params.client?.connect?.client?.id) ??
+    trimToNonEmptyString(params.client?.connect?.role) ??
+    null;
+  const actorSession = trimToNonEmptyString(params.client?.connId) ?? null;
+  return {
+    trigger: "api",
+    requestedAtMs: Date.now(),
+    requestedBy,
+    actorSession,
+    actorSessionKey: null,
+  };
+}
 
 export const cronHandlers: GatewayRequestHandlers = {
   wake: ({ params, respond, context }) => {
@@ -190,7 +215,7 @@ export const cronHandlers: GatewayRequestHandlers = {
     }
     respond(true, result, undefined);
   },
-  "cron.run": async ({ params, respond, context }) => {
+  "cron.run": async ({ params, respond, context, client }) => {
     if (!validateCronRunParams(params)) {
       respond(
         false,
@@ -212,7 +237,9 @@ export const cronHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const result = await context.cron.enqueueRun(jobId, p.mode ?? "force");
+    const result = await context.cron.enqueueRun(jobId, p.mode ?? "force", {
+      provenance: buildApiRunProvenance({ client }),
+    });
     respond(true, result, undefined);
   },
   "cron.runs": async ({ params, respond, context }) => {

@@ -1,6 +1,12 @@
 import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { CommandLane } from "../../process/lanes.js";
-import type { CronJob, CronJobCreate, CronJobPatch } from "../types.js";
+import type {
+  CronJob,
+  CronJobCreate,
+  CronJobPatch,
+  CronRunProvenance,
+  CronRunTrigger,
+} from "../types.js";
 import { normalizeCronCreateDeliveryInput } from "./initial-delivery.js";
 import {
   applyJobPatch,
@@ -47,6 +53,62 @@ export type CronListPageResult = {
   hasMore: boolean;
   nextOffset: number | null;
 };
+
+function normalizeRunTrigger(input: unknown): CronRunTrigger {
+  if (
+    input === "scheduler" ||
+    input === "manual" ||
+    input === "api" ||
+    input === "debug" ||
+    input === "unknown"
+  ) {
+    return input;
+  }
+  return "unknown";
+}
+
+function normalizeOptionalText(input: unknown): string | null | undefined {
+  if (input === null) {
+    return null;
+  }
+  if (typeof input !== "string") {
+    return undefined;
+  }
+  const trimmed = input.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function buildRunProvenance(params: {
+  base?: Partial<CronRunProvenance>;
+  fallbackTrigger: CronRunTrigger;
+  fallbackRequestedAtMs: number;
+}): CronRunProvenance {
+  const trigger = normalizeRunTrigger(params.base?.trigger ?? params.fallbackTrigger);
+  const requestedAtMs =
+    typeof params.base?.requestedAtMs === "number" && Number.isFinite(params.base.requestedAtMs)
+      ? Math.max(0, Math.floor(params.base.requestedAtMs))
+      : Math.max(0, Math.floor(params.fallbackRequestedAtMs));
+  return {
+    trigger,
+    requestedAtMs,
+    requestedBy: normalizeOptionalText(params.base?.requestedBy),
+    actorSession: normalizeOptionalText(params.base?.actorSession),
+    actorSessionKey: normalizeOptionalText(params.base?.actorSessionKey),
+  };
+}
+
+function resolveManualRunProvenance(
+  state: CronServiceState,
+  base?: Partial<CronRunProvenance>,
+): CronRunProvenance {
+  const now = state.deps.nowMs();
+  return buildRunProvenance({
+    base,
+    fallbackTrigger: "manual",
+    fallbackRequestedAtMs: now,
+  });
+}
+
 function mergeManualRunSnapshotAfterReload(params: {
   state: CronServiceState;
   jobId: string;
@@ -353,6 +415,7 @@ type PreparedManualRun =
       jobId: string;
       startedAt: number;
       executionJob: CronJob;
+      provenance: CronRunProvenance;
     }
   | { ok: false };
 
@@ -416,6 +479,7 @@ async function prepareManualRun(
   state: CronServiceState,
   id: string,
   mode?: "due" | "force",
+  requestedProvenance?: Partial<CronRunProvenance>,
 ): Promise<PreparedManualRun> {
   const preflight = await inspectManualRunPreflight(state, id, mode);
   if (!preflight.ok) {
@@ -428,6 +492,7 @@ async function prepareManualRun(
       reason: preflight.reason,
     } as const;
   }
+  const provenance = resolveManualRunProvenance(state, requestedProvenance);
   return await locked(state, async () => {
     // Reserve this run under lock, then execute outside lock so read ops
     // (`list`, `status`) stay responsive while the run is in progress.
@@ -440,7 +505,12 @@ async function prepareManualRun(
     // Persist the running marker before releasing lock so timer ticks that
     // force-reload from disk cannot start the same job concurrently.
     await persist(state);
-    emit(state, { jobId: job.id, action: "started", runAtMs: preflight.now });
+    emit(state, {
+      jobId: job.id,
+      action: "started",
+      runAtMs: preflight.now,
+      provenance,
+    });
     const executionJob = JSON.parse(JSON.stringify(job)) as CronJob;
     return {
       ok: true,
@@ -448,6 +518,7 @@ async function prepareManualRun(
       jobId: job.id,
       startedAt: preflight.now,
       executionJob,
+      provenance,
     } as const;
   });
 }
@@ -460,6 +531,7 @@ async function finishPreparedManualRun(
   const executionJob = prepared.executionJob;
   const startedAt = prepared.startedAt;
   const jobId = prepared.jobId;
+  const provenance = prepared.provenance;
 
   let coreResult: Awaited<ReturnType<typeof executeJobCoreWithTimeout>>;
   try {
@@ -500,6 +572,7 @@ async function finishPreparedManualRun(
       deliveryError: job.state.lastDeliveryError,
       sessionId: coreResult.sessionId,
       sessionKey: coreResult.sessionKey,
+      provenance,
       runAtMs: startedAt,
       durationMs: job.state.lastDurationMs,
       nextRunAtMs: job.state.nextRunAtMs,
@@ -539,8 +612,13 @@ async function finishPreparedManualRun(
   });
 }
 
-export async function run(state: CronServiceState, id: string, mode?: "due" | "force") {
-  const prepared = await prepareManualRun(state, id, mode);
+export async function run(
+  state: CronServiceState,
+  id: string,
+  mode?: "due" | "force",
+  opts?: { provenance?: Partial<CronRunProvenance> },
+) {
+  const prepared = await prepareManualRun(state, id, mode, opts?.provenance);
   if (!prepared.ok || !prepared.ran) {
     return prepared;
   }
@@ -548,17 +626,23 @@ export async function run(state: CronServiceState, id: string, mode?: "due" | "f
   return { ok: true, ran: true } as const;
 }
 
-export async function enqueueRun(state: CronServiceState, id: string, mode?: "due" | "force") {
+export async function enqueueRun(
+  state: CronServiceState,
+  id: string,
+  mode?: "due" | "force",
+  opts?: { provenance?: Partial<CronRunProvenance> },
+) {
   const disposition = await inspectManualRunDisposition(state, id, mode);
   if (!disposition.ok || !("runnable" in disposition && disposition.runnable)) {
     return disposition;
   }
 
+  const provenance = resolveManualRunProvenance(state, opts?.provenance);
   const runId = `manual:${id}:${state.deps.nowMs()}:${nextManualRunId++}`;
   void enqueueCommandInLane(
     CommandLane.Cron,
     async () => {
-      const result = await run(state, id, mode);
+      const result = await run(state, id, mode, { provenance });
       if (result.ok && "ran" in result && !result.ran) {
         state.deps.log.info(
           { jobId: id, runId, reason: result.reason },

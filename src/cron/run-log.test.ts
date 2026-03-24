@@ -273,6 +273,52 @@ describe("cron run log", () => {
     });
   });
 
+  it("reads run provenance fields with null-safe parsing", async () => {
+    await withRunLogDir("openclaw-cron-log-provenance-", async (dir) => {
+      const logPath = path.join(dir, "runs", "job-1.jsonl");
+
+      await appendCronRunLog(logPath, {
+        ts: 1,
+        jobId: "job-1",
+        action: "finished",
+        status: "ok",
+        provenance: {
+          trigger: "api",
+          requestedAtMs: 123,
+          requestedBy: "openclaw-cli",
+          actorSession: "conn-1",
+          actorSessionKey: null,
+        },
+      });
+
+      await fs.appendFile(
+        logPath,
+        `${JSON.stringify({
+          ts: 2,
+          jobId: "job-1",
+          action: "finished",
+          status: "ok",
+          provenance: {
+            trigger: "invalid",
+            requestedAtMs: "oops",
+            requestedBy: "   ",
+          },
+        })}\n`,
+        "utf-8",
+      );
+
+      const entries = await readCronRunLogEntries(logPath, { limit: 10, jobId: "job-1" });
+      expect(entries[0]?.provenance).toEqual({
+        trigger: "api",
+        requestedAtMs: 123,
+        requestedBy: "openclaw-cli",
+        actorSession: "conn-1",
+        actorSessionKey: null,
+      });
+      expect(entries[1]?.provenance).toBeUndefined();
+    });
+  });
+
   it("cleans up pending-write bookkeeping after appends complete", async () => {
     await withRunLogDir("openclaw-cron-log-pending-", async (dir) => {
       const logPath = path.join(dir, "runs", "job-cleanup.jsonl");

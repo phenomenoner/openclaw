@@ -7,6 +7,7 @@ import type {
   CronJobPatch,
   CronMessageChannel,
   CronRunOutcome,
+  CronRunProvenance,
   CronRunStatus,
   CronRunTelemetry,
   CronStoreFile,
@@ -25,6 +26,7 @@ export type CronEvent = {
   deliveryError?: string;
   sessionId?: string;
   sessionKey?: string;
+  provenance?: CronRunProvenance;
   nextRunAtMs?: number;
 } & CronRunTelemetry;
 

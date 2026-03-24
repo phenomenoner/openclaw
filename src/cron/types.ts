@@ -42,6 +42,15 @@ export type CronDeliveryPatch = Partial<CronDelivery>;
 
 export type CronRunStatus = "ok" | "error" | "skipped";
 export type CronDeliveryStatus = "delivered" | "not-delivered" | "unknown" | "not-requested";
+export type CronRunTrigger = "scheduler" | "manual" | "api" | "debug" | "unknown";
+
+export type CronRunProvenance = {
+  trigger: CronRunTrigger;
+  requestedAtMs?: number;
+  requestedBy?: string | null;
+  actorSession?: string | null;
+  actorSessionKey?: string | null;
+};
 
 export type CronUsageSummary = {
   input_tokens?: number;

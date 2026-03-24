@@ -511,6 +511,13 @@ describe("gateway server cron", () => {
       expect((entries as Array<{ deliveryStatus?: unknown }>).at(-1)?.deliveryStatus).toBe(
         "not-requested",
       );
+      expect(
+        (entries as Array<{ provenance?: { trigger?: unknown } }>).at(-1)?.provenance?.trigger,
+      ).toBe("api");
+      expect(
+        typeof (entries as Array<{ provenance?: { requestedAtMs?: unknown } }>).at(-1)?.provenance
+          ?.requestedAtMs,
+      ).toBe("number");
       const allRunsRes = await rpcReq(ws, "cron.runs", {
         scope: "all",
         limit: 50,
@@ -550,11 +557,12 @@ describe("gateway server cron", () => {
         (payload) => payload?.jobId === autoJobId && payload?.action === "finished",
       );
       const autoEntries = (await rpcReq(ws, "cron.runs", { id: autoJobId, limit: 10 })).payload as
-        | { entries?: Array<{ jobId?: unknown }> }
+        | { entries?: Array<{ jobId?: unknown; provenance?: { trigger?: unknown } }> }
         | undefined;
       expect(Array.isArray(autoEntries?.entries)).toBe(true);
       const runs = autoEntries?.entries ?? [];
       expect(runs.at(-1)?.jobId).toBe(autoJobId);
+      expect(runs.at(-1)?.provenance?.trigger).toBe("scheduler");
     } finally {
       await cleanupCronTestRun({ ws, server, prevSkipCron });
     }

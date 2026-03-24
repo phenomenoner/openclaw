@@ -56,6 +56,23 @@ const CronDeliveryStatusSchema = Type.Union([
   Type.Literal("unknown"),
   Type.Literal("not-requested"),
 ]);
+const CronRunTriggerSchema = Type.Union([
+  Type.Literal("scheduler"),
+  Type.Literal("manual"),
+  Type.Literal("api"),
+  Type.Literal("debug"),
+  Type.Literal("unknown"),
+]);
+const CronRunProvenanceSchema = Type.Object(
+  {
+    trigger: CronRunTriggerSchema,
+    requestedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
+    requestedBy: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+    actorSession: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+    actorSessionKey: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+  },
+  { additionalProperties: false },
+);
 const CronFailoverReasonSchema = Type.Union([
   Type.Literal("auth"),
   Type.Literal("format"),
@@ -347,6 +364,7 @@ export const CronRunLogEntrySchema = Type.Object(
     deliveryError: Type.Optional(Type.String()),
     sessionId: Type.Optional(NonEmptyString),
     sessionKey: Type.Optional(NonEmptyString),
+    provenance: Type.Optional(CronRunProvenanceSchema),
     runAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
     durationMs: Type.Optional(Type.Integer({ minimum: 0 })),
     nextRunAtMs: Type.Optional(Type.Integer({ minimum: 0 })),

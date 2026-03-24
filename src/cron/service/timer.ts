@@ -9,8 +9,10 @@ import type {
   CronJob,
   CronMessageChannel,
   CronRunOutcome,
+  CronRunProvenance,
   CronRunStatus,
   CronRunTelemetry,
+  CronRunTrigger,
 } from "../types.js";
 import {
   computeJobPreviousRunAtMs,
@@ -43,6 +45,53 @@ const DEFAULT_MAX_MISSED_JOBS_PER_RESTART = 5;
 const DEFAULT_FAILURE_ALERT_AFTER = 2;
 const DEFAULT_FAILURE_ALERT_COOLDOWN_MS = 60 * 60_000; // 1 hour
 
+function normalizeRunTrigger(input: unknown): CronRunTrigger {
+  if (
+    input === "scheduler" ||
+    input === "manual" ||
+    input === "api" ||
+    input === "debug" ||
+    input === "unknown"
+  ) {
+    return input;
+  }
+  return "unknown";
+}
+
+function normalizeOptionalText(input: unknown): string | null | undefined {
+  if (input === null) {
+    return null;
+  }
+  if (typeof input !== "string") {
+    return undefined;
+  }
+  const trimmed = input.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function makeRunProvenance(
+  base: Partial<CronRunProvenance> | undefined,
+  fallbackTrigger: CronRunTrigger,
+  fallbackRequestedAtMs: number,
+): CronRunProvenance {
+  const trigger = normalizeRunTrigger(base?.trigger ?? fallbackTrigger);
+  const requestedAtMs =
+    typeof base?.requestedAtMs === "number" && Number.isFinite(base.requestedAtMs)
+      ? Math.max(0, Math.floor(base.requestedAtMs))
+      : Math.max(0, Math.floor(fallbackRequestedAtMs));
+  return {
+    trigger,
+    requestedAtMs,
+    requestedBy: normalizeOptionalText(base?.requestedBy),
+    actorSession: normalizeOptionalText(base?.actorSession),
+    actorSessionKey: normalizeOptionalText(base?.actorSessionKey),
+  };
+}
+
+function schedulerRunProvenance(requestedAtMs: number): CronRunProvenance {
+  return makeRunProvenance({ trigger: "scheduler", requestedAtMs }, "scheduler", requestedAtMs);
+}
+
 type TimedCronRunOutcome = CronRunOutcome &
   CronRunTelemetry & {
     jobId: string;
@@ -50,6 +99,7 @@ type TimedCronRunOutcome = CronRunOutcome &
     deliveryAttempted?: boolean;
     startedAt: number;
     endedAt: number;
+    provenance?: CronRunProvenance;
   };
 
 type StartupCatchupCandidate = {
@@ -627,13 +677,19 @@ export async function onTimer(state: CronServiceState) {
     }): Promise<TimedCronRunOutcome> => {
       const { id, job } = params;
       const startedAt = state.deps.nowMs();
+      const provenance = schedulerRunProvenance(startedAt);
       job.state.runningAtMs = startedAt;
-      emit(state, { jobId: job.id, action: "started", runAtMs: startedAt });
+      emit(state, {
+        jobId: job.id,
+        action: "started",
+        runAtMs: startedAt,
+        provenance,
+      });
       const jobTimeoutMs = resolveCronJobTimeoutMs(job);
 
       try {
         const result = await executeJobCoreWithTimeout(state, job);
-        return { jobId: id, ...result, startedAt, endedAt: state.deps.nowMs() };
+        return { jobId: id, ...result, startedAt, endedAt: state.deps.nowMs(), provenance };
       } catch (err) {
         const errorText = isAbortError(err) ? timeoutErrorMessage() : String(err);
         state.deps.log.warn(
@@ -646,6 +702,7 @@ export async function onTimer(state: CronServiceState) {
           error: errorText,
           startedAt,
           endedAt: state.deps.nowMs(),
+          provenance,
         };
       }
     };
@@ -926,7 +983,13 @@ async function runStartupCatchupCandidate(
   candidate: StartupCatchupCandidate,
 ): Promise<TimedCronRunOutcome> {
   const startedAt = state.deps.nowMs();
-  emit(state, { jobId: candidate.job.id, action: "started", runAtMs: startedAt });
+  const provenance = schedulerRunProvenance(startedAt);
+  emit(state, {
+    jobId: candidate.job.id,
+    action: "started",
+    runAtMs: startedAt,
+    provenance,
+  });
   try {
     const result = await executeJobCoreWithTimeout(state, candidate.job);
     return {
@@ -942,6 +1005,7 @@ async function runStartupCatchupCandidate(
       usage: result.usage,
       startedAt,
       endedAt: state.deps.nowMs(),
+      provenance,
     };
   } catch (err) {
     return {
@@ -950,6 +1014,7 @@ async function runStartupCatchupCandidate(
       error: String(err),
       startedAt,
       endedAt: state.deps.nowMs(),
+      provenance,
     };
   }
 }
@@ -1162,25 +1227,36 @@ export async function executeJob(
   state: CronServiceState,
   job: CronJob,
   _nowMs: number,
-  _opts: { forced: boolean },
+  opts: { forced: boolean; provenance?: Partial<CronRunProvenance> },
 ) {
   if (!job.state) {
     job.state = {};
   }
   const startedAt = state.deps.nowMs();
+  const provenance = makeRunProvenance(
+    opts.provenance,
+    opts.forced ? "manual" : "scheduler",
+    startedAt,
+  );
   job.state.runningAtMs = startedAt;
   job.state.lastError = undefined;
-  emit(state, { jobId: job.id, action: "started", runAtMs: startedAt });
+  emit(state, {
+    jobId: job.id,
+    action: "started",
+    runAtMs: startedAt,
+    provenance,
+  });
 
   let coreResult: {
     status: CronRunStatus;
     delivered?: boolean;
+    provenance?: CronRunProvenance;
   } & CronRunOutcome &
     CronRunTelemetry;
   try {
-    coreResult = await executeJobCore(state, job);
+    coreResult = { ...(await executeJobCore(state, job)), provenance };
   } catch (err) {
-    coreResult = { status: "error", error: String(err) };
+    coreResult = { status: "error", error: String(err), provenance };
   }
 
   const endedAt = state.deps.nowMs();
@@ -1206,6 +1282,7 @@ function emitJobFinished(
   result: {
     status: CronRunStatus;
     delivered?: boolean;
+    provenance?: CronRunProvenance;
   } & CronRunOutcome &
     CronRunTelemetry,
   runAtMs: number,
@@ -1221,6 +1298,7 @@ function emitJobFinished(
     deliveryError: job.state.lastDeliveryError,
     sessionId: result.sessionId,
     sessionKey: result.sessionKey,
+    provenance: result.provenance,
     runAtMs,
     durationMs: job.state.lastDurationMs,
     nextRunAtMs: job.state.nextRunAtMs,
