@@ -1,6 +1,6 @@
 ---
 name: coding-agent
-description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background process. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative coding that needs file exploration. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/clawd workspace (never spawn agents here). Claude Code: use --print --permission-mode bypassPermissions (no PTY). Codex/Pi/OpenCode: pty:true required.'
+description: 'Delegate coding tasks to Codex, Claude Code, or Pi agents via background process. Use when: (1) building/creating new features or apps, (2) reviewing PRs (spawn in temp dir), (3) refactoring large codebases, (4) iterative coding that needs file exploration. NOT for: simple one-liner fixes (just edit), reading code (use read tool), thread-bound ACP harness requests in chat (for example spawn/run Codex or Claude Code in a Discord thread; use sessions_spawn with runtime:"acp"), or any work in ~/clawd workspace (never spawn agents here). Claude Code: prefer non-bypass --print (no PTY); for long/quoted prompts prefer stdin-fed --print. Codex/Pi/OpenCode: pty:true required.'
 metadata:
   {
     "openclaw": { "emoji": "🧩", "requires": { "anyBins": ["claude", "codex", "opencode", "pi"] } },
@@ -20,18 +20,31 @@ For **Codex, Pi, and OpenCode**, PTY is still required (interactive terminal app
 bash pty:true command:"codex exec 'Your prompt'"
 ```
 
-For **Claude Code** (`claude` CLI), use `--print --permission-mode bypassPermissions` instead.
-`--dangerously-skip-permissions` with PTY can exit after the confirmation dialog.
-`--print` mode keeps full tool access and avoids interactive confirmation:
+For **Claude Code** (`claude` CLI), the safe posture depends on the host.
+On this root-host path, **do not assume** `--permission-mode bypassPermissions` is valid: Claude can map that to the dangerous-permissions path and reject it before useful work starts.
+Prefer plain `--print` for one-shot runs here, or another explicit **non-bypass** mode (`default` / `auto` / `plan`) when needed.
+Do **not** add `--bare` for ordinary one-shot work on this host: it suppresses the normal claude.ai auth surface here and can produce a misleading `Not logged in` even when `claude auth status` is healthy. Use `--bare` only when you intentionally want API-key/settings-only auth.
+For long, quoted, or multiline prompts, prefer feeding stdin to `claude --print` via heredoc/pipe instead of relying on shell-quoted prompt arguments.
+If Claude returns `Error: Input must be provided either through stdin or as a prompt argument when using --print`, treat it as an invocation/input-wiring issue; retry once with stdin rather than misclassifying it as auth/quota.
+`--dangerously-skip-permissions` with PTY is also wrong on this host.
 
 ```bash
-# ✅ Correct for Claude Code (no PTY needed)
-cd /path/to/project && claude --permission-mode bypassPermissions --print 'Your task'
+# ✅ Preferred for Claude Code on this root-host path (no PTY needed)
+cd /path/to/project && claude --print 'Your task'
+
+# ✅ Preferred for long / quoted / multiline prompts
+cd /path/to/project && cat <<'EOF' | claude --print --model opus --no-session-persistence --tools ""
+Your task
+EOF
+
+# Optional non-bypass posture when explicitly needed
+cd /path/to/project && claude --permission-mode plan --print 'Your task'
 
 # For background execution: use background:true on the exec tool
 
-# ❌ Wrong for Claude Code
+# ❌ Wrong for Claude Code on this host
 bash pty:true command:"claude --dangerously-skip-permissions 'task'"
+cd /path/to/project && claude --permission-mode bypassPermissions --print 'Your task'
 ```
 
 ### Bash Tool Parameters
@@ -167,11 +180,12 @@ gh pr comment <PR#> --body "<review content>"
 ## Claude Code
 
 ```bash
-# Foreground
-bash workdir:~/project command:"claude --permission-mode bypassPermissions --print 'Your task'"
+# Foreground (short prompt)
+bash workdir:~/project command:"claude --print 'Your task'"
 
-# Background
-bash workdir:~/project background:true command:"claude --permission-mode bypassPermissions --print 'Your task'"
+# Foreground / Background (long or quote-heavy prompt; preferred for reviews)
+bash workdir:~/project command:"cat <<'EOF' | claude --print --model opus --no-session-persistence --tools \"\"\nReview the current diff for release hygiene.\nEOF"
+bash workdir:~/project background:true command:"cat <<'EOF' | claude --print --model opus --no-session-persistence --tools \"\"\nReview the current diff for release hygiene.\nEOF"
 ```
 
 ---
@@ -233,7 +247,7 @@ git worktree remove /tmp/issue-99
 
 1. **Use the right execution mode per agent**:
    - Codex/Pi/OpenCode: `pty:true`
-   - Claude Code: `--print --permission-mode bypassPermissions` (no PTY required)
+   - Claude Code: non-bypass `--print` (no PTY required); use stdin-fed `--print` for long/quoted/multiline prompts
 2. **Respect tool choice** - if user asks for Codex, use Codex.
    - Orchestrator mode: do NOT hand-code patches yourself.
    - If an agent fails/hangs, respawn it or ask the user for direction, but don't silently take over.
@@ -292,4 +306,6 @@ This triggers an immediate wake event — Skippy gets pinged in seconds, not 10 
 - **Git repo required:** Codex won't run outside a git directory. Use `mktemp -d && git init` for scratch work.
 - **exec is your friend:** `codex exec "prompt"` runs and exits cleanly - perfect for one-shots.
 - **submit vs write:** Use `submit` to send input + Enter, `write` for raw data without newline.
+- **Sass works:** Codex responds well to playful prompts. Asked it to write a haiku about being second fiddle to a space lobster, got: _"Second chair, I code / Space lobster sets the tempo / Keys glow, I follow"_ 🦞
+  w data without newline.
 - **Sass works:** Codex responds well to playful prompts. Asked it to write a haiku about being second fiddle to a space lobster, got: _"Second chair, I code / Space lobster sets the tempo / Keys glow, I follow"_ 🦞
