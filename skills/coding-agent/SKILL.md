@@ -20,6 +20,17 @@ For **Codex, Pi, and OpenCode**, PTY is still required (interactive terminal app
 bash pty:true command:"codex exec 'Your prompt'"
 ```
 
+For **Codex on this host**, also treat an **isolated git root** as mandatory for write tasks.
+Do **not** assume sandboxed Codex write modes like `codex exec --full-auto` will work here: current host receipts show `bwrap` / user-namespace failures can break model-issued `apply_patch` and shell-write steps.
+When the outer environment is already bounded (OpenClaw exec sandbox, disposable scratch repo, detached worktree), prefer:
+
+```bash
+# ✅ Preferred Codex posture on this host for write tasks
+bash pty:true workdir:/tmp/safe-repo command:"codex exec --dangerously-bypass-approvals-and-sandbox 'Your task'"
+```
+
+Treat `bwrap: No permissions to create a new namespace` as a **sandbox substrate issue**, not an auth/quota problem.
+
 For **Claude Code** (`claude` CLI), the safe posture depends on the host.
 On this root-host path, **do not assume** `--permission-mode bypassPermissions` is valid: Claude can map that to the dangerous-permissions path and reject it before useful work starts.
 Prefer plain `--print` for one-shot runs here, or another explicit **non-bypass** mode (`default` / `auto` / `plan`) when needed.
@@ -78,14 +89,14 @@ cd /path/to/project && claude --permission-mode bypassPermissions --print 'Your 
 For quick prompts/chats, create a temp git repo and run:
 
 ```bash
-# Quick chat (Codex needs a git repo!)
-SCRATCH=$(mktemp -d) && cd $SCRATCH && git init && codex exec "Your prompt here"
+# Quick chat / scratch write task (Codex needs a git repo!)
+SCRATCH=$(mktemp -d) && cd "$SCRATCH" && git init -b main && codex exec --dangerously-bypass-approvals-and-sandbox "Your prompt here"
 
-# Or in a real project - with PTY!
-bash pty:true workdir:~/Projects/myproject command:"codex exec 'Add error handling to the API calls'"
+# Or in a detached/safe project worktree - with PTY!
+bash pty:true workdir:/tmp/safe-worktree command:"codex exec --dangerously-bypass-approvals-and-sandbox 'Add error handling to the API calls'"
 ```
 
-**Why git init?** Codex refuses to run outside a trusted git directory. Creating a temp repo solves this for scratch work.
+**Why git init?** Codex refuses to run outside a trusted git directory. On this host, a temp repo / detached worktree also gives Codex the narrow safe root it needs.
 
 ---
 
@@ -94,8 +105,8 @@ bash pty:true workdir:~/Projects/myproject command:"codex exec 'Add error handli
 For longer tasks, use background mode with PTY:
 
 ```bash
-# Start agent in target directory (with PTY!)
-bash pty:true workdir:~/project background:true command:"codex exec --full-auto 'Build a snake game'"
+# Start agent in a bounded target directory (with PTY!)
+bash pty:true workdir:/tmp/safe-worktree background:true command:"codex exec --dangerously-bypass-approvals-and-sandbox 'Build a snake game'"
 # Returns sessionId for tracking
 
 # Monitor progress
@@ -120,25 +131,32 @@ process action:kill sessionId:XXX
 
 ## Codex CLI
 
-**Model:** `gpt-5.2-codex` is the default (set in ~/.codex/config.toml)
+**Model:** inspect the live Codex session banner / local config rather than hard-coding an older alias; this host currently reports `gpt-5.4` in the CLI banner.
 
 ### Flags
 
-| Flag            | Effect                                             |
-| --------------- | -------------------------------------------------- |
-| `exec "prompt"` | One-shot execution, exits when done                |
-| `--full-auto`   | Sandboxed but auto-approves in workspace           |
-| `--yolo`        | NO sandbox, NO approvals (fastest, most dangerous) |
+| Flag                                         | Effect                                                                                                              |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `exec "prompt"`                              | One-shot execution, exits when done                                                                                 |
+| `--full-auto`                                | Convenience alias for sandboxed low-friction execution; **do not assume this works for write tasks on this host**   |
+| `--dangerously-bypass-approvals-and-sandbox` | No sandbox / no approvals inside Codex itself; only use when the **outer** execution environment is already bounded |
 
 ### Building/Creating
 
 ```bash
-# Quick one-shot (auto-approves) - remember PTY!
-bash pty:true workdir:~/project command:"codex exec --full-auto 'Build a dark mode toggle'"
+# Preferred on this host: isolated root + PTY + dangerous bypass
+bash pty:true workdir:/tmp/safe-worktree command:"codex exec --dangerously-bypass-approvals-and-sandbox 'Build a dark mode toggle'"
 
-# Background for longer work
-bash pty:true workdir:~/project background:true command:"codex --yolo 'Refactor the auth module'"
+# Background for longer work in an isolated root
+bash pty:true workdir:/tmp/safe-worktree background:true command:"codex exec --dangerously-bypass-approvals-and-sandbox 'Refactor the auth module'"
 ```
+
+### Host-specific failure classification
+
+- `bwrap: No permissions to create a new namespace` = sandbox substrate / userns issue on this host, **not** auth/quota
+- `refresh_token_reused` / login prompts / 401 = auth issue
+- explicit rate-limit / quota messages = capacity issue; stop and report
+- prompt/input wiring problems = invocation issue; retry once with corrected quoting/stdin
 
 ### Reviewing PRs
 
@@ -224,9 +242,9 @@ For fixing multiple issues in parallel, use git worktrees:
 git worktree add -b fix/issue-78 /tmp/issue-78 main
 git worktree add -b fix/issue-99 /tmp/issue-99 main
 
-# 2. Launch Codex in each (background + PTY!)
-bash pty:true workdir:/tmp/issue-78 background:true command:"pnpm install && codex --yolo 'Fix issue #78: <description>. Commit and push.'"
-bash pty:true workdir:/tmp/issue-99 background:true command:"pnpm install && codex --yolo 'Fix issue #99 from the approved ticket summary. Implement only the in-scope edits and commit after review.'"
+# 2. Launch Codex in each isolated worktree (background + PTY!)
+bash pty:true workdir:/tmp/issue-78 background:true command:"pnpm install && codex exec --dangerously-bypass-approvals-and-sandbox 'Fix issue #78: <description>. Commit and push.'"
+bash pty:true workdir:/tmp/issue-99 background:true command:"pnpm install && codex exec --dangerously-bypass-approvals-and-sandbox 'Fix issue #99 from the approved ticket summary. Implement only the in-scope edits and commit after review.'"
 
 # 3. Monitor progress
 process action:list
@@ -253,9 +271,9 @@ git worktree remove /tmp/issue-99
    - If an agent fails/hangs, respawn it or ask the user for direction, but don't silently take over.
 3. **Be patient** - don't kill sessions because they're "slow"
 4. **Monitor with process:log** - check progress without interfering
-5. **--full-auto for building** - auto-approves changes
+5. **On this host, prefer isolated-root dangerous-bypass over `--full-auto` for Codex write tasks**
 6. **vanilla for reviewing** - no special flags needed
-7. **Parallel is OK** - run many Codex processes at once for batch work
+7. **Parallel is OK** - run many Codex processes at once for batch work, but keep each one inside its own narrow git root
 8. **NEVER start Codex in ~/.openclaw/** - it'll read your soul docs and get weird ideas about the org chart!
 9. **NEVER checkout branches in ~/Projects/openclaw/** - that's the LIVE OpenClaw instance!
 
@@ -291,7 +309,7 @@ openclaw system event --text "Done: [brief summary of what was built]" --mode no
 **Example:**
 
 ```bash
-bash pty:true workdir:~/project background:true command:"codex --yolo exec 'Build a REST API for todos.
+bash pty:true workdir:/tmp/safe-worktree background:true command:"codex exec --dangerously-bypass-approvals-and-sandbox 'Build a REST API for todos.
 
 When completely finished, run: openclaw system event --text \"Done: Built todos REST API with CRUD endpoints\" --mode now'"
 ```
@@ -303,9 +321,9 @@ This triggers an immediate wake event — Skippy gets pinged in seconds, not 10 
 ## Learnings (Jan 2026)
 
 - **PTY is essential:** Coding agents are interactive terminal apps. Without `pty:true`, output breaks or agent hangs.
-- **Git repo required:** Codex won't run outside a git directory. Use `mktemp -d && git init` for scratch work.
+- **Git repo required:** Codex won't run outside a trusted git directory. Use `mktemp -d && git init -b main` or a detached worktree for scratch work.
+- **On this host, `--full-auto` is not the default write posture:** sandboxed Codex writes can fail with `bwrap: No permissions to create a new namespace`.
+- **Best host posture for Codex writes:** isolated scratch repo / detached worktree + `codex exec --dangerously-bypass-approvals-and-sandbox ...` when the outer environment is already bounded.
 - **exec is your friend:** `codex exec "prompt"` runs and exits cleanly - perfect for one-shots.
 - **submit vs write:** Use `submit` to send input + Enter, `write` for raw data without newline.
-- **Sass works:** Codex responds well to playful prompts. Asked it to write a haiku about being second fiddle to a space lobster, got: _"Second chair, I code / Space lobster sets the tempo / Keys glow, I follow"_ 🦞
-  w data without newline.
 - **Sass works:** Codex responds well to playful prompts. Asked it to write a haiku about being second fiddle to a space lobster, got: _"Second chair, I code / Space lobster sets the tempo / Keys glow, I follow"_ 🦞
