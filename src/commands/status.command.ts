@@ -120,6 +120,7 @@ export async function statusCommand(
     gatewayProbeAuth,
     gatewayProbeAuthWarning,
     gatewayProbe,
+    gatewayScopeLimited,
     gatewayReachable,
     gatewaySelf,
     channelIssues,
@@ -196,6 +197,7 @@ export async function statusCommand(
             urlSource: gatewayConnection.urlSource,
             misconfigured: remoteUrlMissing,
             reachable: gatewayReachable,
+            scopeLimited: gatewayScopeLimited,
             connectLatencyMs: gatewayProbe?.connectLatencyMs ?? null,
             self: gatewaySelf,
             error: gatewayProbe?.error ?? null,
@@ -259,9 +261,15 @@ export async function statusCommand(
       : `${gatewayConnection.url}${gatewayConnection.urlSource ? ` (${gatewayConnection.urlSource})` : ""}`;
     const reach = remoteUrlMissing
       ? warn("misconfigured (remote.url missing)")
-      : gatewayReachable
-        ? ok(`reachable ${formatDuration(gatewayProbe?.connectLatencyMs)}`)
-        : warn(gatewayProbe?.error ? `unreachable (${gatewayProbe.error})` : "unreachable");
+      : gatewayScopeLimited
+        ? warn(
+            gatewayProbe?.error
+              ? `auth-limited ${formatDuration(gatewayProbe?.connectLatencyMs)} (${gatewayProbe.error})`
+              : `auth-limited ${formatDuration(gatewayProbe?.connectLatencyMs)}`,
+          )
+        : gatewayReachable
+          ? ok(`reachable ${formatDuration(gatewayProbe?.connectLatencyMs)}`)
+          : warn(gatewayProbe?.error ? `unreachable (${gatewayProbe.error})` : "unreachable");
     const auth =
       gatewayReachable && !remoteUrlMissing
         ? ` · auth ${formatGatewayAuthUsed(gatewayProbeAuth)}`
@@ -342,6 +350,9 @@ export async function statusCommand(
     }
     if (!gatewayReachable) {
       return warn("unavailable");
+    }
+    if (gatewayScopeLimited) {
+      return warn("auth-limited");
     }
     if (!lastHeartbeat) {
       return muted("none");

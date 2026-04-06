@@ -13,6 +13,7 @@ import { getMemorySearchManager } from "../memory/index.js";
 import type { MemoryProviderStatus } from "../memory/types.js";
 import { runExec } from "../process/exec.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { isProbeReachable, isScopeLimitedProbeFailure } from "./gateway-status/helpers.js";
 import { buildChannelsTable } from "./status-all/channels.js";
 import { getAgentLocalStatuses } from "./status.agent-local.js";
 import {
@@ -144,6 +145,7 @@ export type StatusScanResult = {
   };
   gatewayProbeAuthWarning?: string;
   gatewayProbe: Awaited<ReturnType<typeof probeGateway>> | null;
+  gatewayScopeLimited: boolean;
   gatewayReachable: boolean;
   gatewaySelf: ReturnType<typeof pickGatewaySelfPresence>;
   channelIssues: ReturnType<typeof collectChannelStatusIssues>;
@@ -231,7 +233,8 @@ async function scanStatusJsonFast(opts: {
     gatewayProbeAuthWarning,
     gatewayProbe,
   } = gatewaySnapshot;
-  const gatewayReachable = gatewayProbe?.ok === true;
+  const gatewayScopeLimited = gatewayProbe ? isScopeLimitedProbeFailure(gatewayProbe) : false;
+  const gatewayReachable = gatewayProbe ? isProbeReachable(gatewayProbe) : false;
   const gatewaySelf = gatewayProbe?.presence
     ? pickGatewaySelfPresence(gatewayProbe.presence)
     : null;
@@ -256,6 +259,7 @@ async function scanStatusJsonFast(opts: {
     gatewayProbeAuth,
     gatewayProbeAuthWarning,
     gatewayProbe,
+    gatewayScopeLimited,
     gatewayReachable,
     gatewaySelf,
     channelIssues,
@@ -341,7 +345,8 @@ export async function scanStatus(
         gatewayProbeAuthWarning,
         gatewayProbe,
       } = await resolveGatewayProbeSnapshot({ cfg, opts });
-      const gatewayReachable = gatewayProbe?.ok === true;
+      const gatewayScopeLimited = gatewayProbe ? isScopeLimitedProbeFailure(gatewayProbe) : false;
+      const gatewayReachable = gatewayProbe ? isProbeReachable(gatewayProbe) : false;
       const gatewaySelf = gatewayProbe?.presence
         ? pickGatewaySelfPresence(gatewayProbe.presence)
         : null;
@@ -388,6 +393,7 @@ export async function scanStatus(
         gatewayProbeAuth,
         gatewayProbeAuthWarning,
         gatewayProbe,
+        gatewayScopeLimited,
         gatewayReachable,
         gatewaySelf,
         channelIssues,

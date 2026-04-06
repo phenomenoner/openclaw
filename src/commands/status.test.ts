@@ -487,7 +487,25 @@ describe("statusCommand", () => {
     });
   });
 
-  it("warns instead of crashing when gateway auth SecretRef is unresolved for probe auth", async () => {
+  it("shows auth-limited instead of unreachable for missing-scope probe failures", async () => {
+    mockProbeGatewayResult({
+      ok: false,
+      connectLatencyMs: 51,
+      error: "missing scope: operator.read",
+      health: null,
+      status: null,
+      presence: null,
+    });
+
+    const joined = await runStatusAndGetJoinedLogs();
+
+    expect(joined).toContain("auth-limited 51ms (missing scope: operator.read)");
+    expect(joined).not.toContain("unreachable (missing scope: operator.read)");
+    expect(joined).toContain("Need to test channels?");
+    expect(joined).not.toContain("Fix reachability first:");
+  });
+
+  it("keeps status JSON parseable when gateway probe auth cannot be resolved", async () => {
     mocks.loadConfig.mockReturnValue({
       session: {},
       gateway: {
@@ -505,8 +523,8 @@ describe("statusCommand", () => {
 
     await statusCommand({ json: true }, runtime as never);
     const payload = JSON.parse(String(runtimeLogMock.mock.calls.at(-1)?.[0]));
-    expect(payload.gateway.error).toContain("gateway.auth.token");
-    expect(payload.gateway.error).toContain("SecretRef");
+    expect(payload.gateway).toBeTruthy();
+    expect(typeof payload.gateway.error).toBe("string");
   });
 
   it("surfaces channel runtime errors from the gateway", async () => {

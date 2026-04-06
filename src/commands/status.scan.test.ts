@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   buildGatewayConnectionDetails: vi.fn(),
   probeGateway: vi.fn(),
   resolveGatewayProbeAuthResolution: vi.fn(),
+  callGateway: vi.fn(),
 }));
 
 vi.mock("../cli/progress.js", () => ({
@@ -50,7 +51,7 @@ vi.mock("../infra/tailscale.js", () => ({
 
 vi.mock("../gateway/call.js", () => ({
   buildGatewayConnectionDetails: mocks.buildGatewayConnectionDetails,
-  callGateway: vi.fn(),
+  callGateway: mocks.callGateway,
 }));
 
 vi.mock("../gateway/probe.js", () => ({
@@ -74,6 +75,8 @@ import { scanStatus } from "./status.scan.js";
 
 describe("scanStatus", () => {
   it("passes sourceConfig into buildChannelsTable for summary-mode status output", async () => {
+    mocks.callGateway.mockReset();
+    mocks.callGateway.mockResolvedValue({});
     mocks.readBestEffortConfig.mockResolvedValue({
       marker: "source",
       session: {},
@@ -133,6 +136,66 @@ describe("scanStatus", () => {
       expect.objectContaining({
         sourceConfig: expect.objectContaining({ marker: "source" }),
       }),
+    );
+  });
+
+  it("treats missing-scope probe failures as reachable but auth-limited", async () => {
+    mocks.callGateway.mockReset();
+    mocks.callGateway.mockResolvedValue({ channelAccounts: {} });
+    mocks.readBestEffortConfig.mockResolvedValue({
+      marker: "source",
+      session: {},
+      plugins: { enabled: false },
+      gateway: {},
+    });
+    mocks.resolveCommandSecretRefsViaGateway.mockResolvedValue({
+      resolvedConfig: {
+        marker: "resolved",
+        session: {},
+        plugins: { enabled: false },
+        gateway: {},
+      },
+      diagnostics: [],
+    });
+    mocks.getUpdateCheckResult.mockResolvedValue({
+      installKind: "git",
+      git: null,
+      registry: null,
+    });
+    mocks.getAgentLocalStatuses.mockResolvedValue({
+      defaultId: "main",
+      agents: [],
+    });
+    mocks.getStatusSummary.mockResolvedValue({
+      linkChannel: { linked: false },
+      sessions: { count: 0, paths: [], defaults: {}, recent: [] },
+    });
+    mocks.buildGatewayConnectionDetails.mockReturnValue({
+      url: "ws://127.0.0.1:18789",
+      urlSource: "default",
+    });
+    mocks.resolveGatewayProbeAuthResolution.mockReturnValue({
+      auth: {},
+      warning: undefined,
+    });
+    mocks.probeGateway.mockResolvedValue({
+      ok: false,
+      url: "ws://127.0.0.1:18789",
+      connectLatencyMs: 51,
+      error: "missing scope: operator.read",
+      close: null,
+      health: null,
+      status: null,
+      presence: null,
+      configSnapshot: null,
+    });
+
+    const result = await scanStatus({ json: true }, {} as never);
+
+    expect(result.gatewayReachable).toBe(true);
+    expect(result.gatewayScopeLimited).toBe(true);
+    expect(mocks.callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "channels.status" }),
     );
   });
 });
