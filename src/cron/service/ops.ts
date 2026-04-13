@@ -199,7 +199,9 @@ export async function remove(state: CronServiceState, id: string) {
 export async function run(state: CronServiceState, id: string, mode?: "due" | "force") {
   return await locked(state, async () => {
     warnIfDisabled(state, "run");
-    await ensureLoaded(state, { skipRecompute: true });
+    // Force reload so manual runs see the latest on-disk payload/config edits
+    // instead of a stale in-memory store snapshot.
+    await ensureLoaded(state, { forceReload: true, skipRecompute: true });
     const job = findJobOrThrow(state, id);
     if (typeof job.state.runningAtMs === "number") {
       return { ok: true, ran: false, reason: "already-running" as const };
