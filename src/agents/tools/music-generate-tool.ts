@@ -319,6 +319,8 @@ type ExecutedMusicGeneration = {
   provider: string;
   model: string;
   savedPaths: string[];
+  /** Total track count including handoff tracks. */
+  count: number;
   contentText: string;
   details: Record<string, unknown>;
   wakeResult: string;
@@ -422,6 +424,7 @@ async function executeMusicGenerationJob(params: {
     provider: result.provider,
     model: result.model,
     savedPaths: savedTracks.map((track) => track.path),
+    count: savedTracks.length + handoffTracks.length,
     contentText: lines.join("\n"),
     wakeResult: lines.join("\n"),
     details: {
@@ -587,7 +590,7 @@ export function createMusicGenerateTool(options?: {
               handle: taskHandle,
               provider: executed.provider,
               model: executed.model,
-              count: executed.savedPaths.length,
+              count: executed.count,
               paths: executed.savedPaths,
             });
             try {
@@ -667,7 +670,7 @@ export function createMusicGenerateTool(options?: {
           handle: taskHandle,
           provider: executed.provider,
           model: executed.model,
-          count: executed.savedPaths.length,
+          count: executed.count,
           paths: executed.savedPaths,
         });
         return {

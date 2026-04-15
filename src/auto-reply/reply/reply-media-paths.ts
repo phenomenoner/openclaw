@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
@@ -59,7 +60,10 @@ async function moveOversizeMediaToWorkspace(
   const handoffDir = resolveOversizeMediaHandoffDir();
   await fs.mkdir(handoffDir, { recursive: true, mode: 0o755 });
   const parsed = path.parse(mediaPath);
-  const handoffPath = path.join(handoffDir, `${parsed.name}-${Date.now()}${parsed.ext || ""}`);
+  const handoffPath = path.join(
+    handoffDir,
+    `${parsed.name}---${crypto.randomUUID()}${parsed.ext || ""}`,
+  );
   if (path.resolve(mediaPath) !== path.resolve(handoffPath)) {
     await fs.copyFile(mediaPath, handoffPath);
   }
