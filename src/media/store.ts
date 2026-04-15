@@ -264,6 +264,20 @@ export type SavedMedia = {
   contentType?: string;
 };
 
+export type SavedMediaHandoff = {
+  path: string;
+  size: number;
+  contentType?: string;
+};
+
+export type SavedMediaResult =
+  | { kind: "managed"; media: SavedMedia }
+  | { kind: "handoff"; media: SavedMediaHandoff };
+
+function resolveOversizeMediaHandoffDir() {
+  return process.env.OPENCLAW_OVERSIZE_MEDIA_DIR?.trim() || "/workspace/openclaw-oversize-media";
+}
+
 function buildSavedMediaId(params: {
   baseId: string;
   ext: string;
@@ -412,6 +426,38 @@ export async function saveMediaBuffer(
   const id = buildSavedMediaId({ baseId: uuid, ext, originalFilename });
   await writeSavedMediaBuffer({ dir, id, buffer });
   return buildSavedMediaResult({ dir, id, size: buffer.byteLength, contentType: mime });
+}
+
+export async function saveMediaBufferWithHandoff(
+  buffer: Buffer,
+  contentType?: string,
+  subdir = "inbound",
+  maxBytes = MAX_BYTES,
+  originalFilename?: string,
+): Promise<SavedMediaResult> {
+  if (buffer.byteLength <= maxBytes) {
+    return {
+      kind: "managed",
+      media: await saveMediaBuffer(buffer, contentType, subdir, maxBytes, originalFilename),
+    };
+  }
+
+  const dir = path.join(resolveOversizeMediaHandoffDir(), subdir);
+  await fs.mkdir(dir, { recursive: true, mode: 0o755 });
+  const uuid = crypto.randomUUID();
+  const headerExt = extensionForMime(normalizeOptionalString(contentType?.split(";")[0]));
+  const mime = await detectMime({ buffer, headerMime: contentType });
+  const ext = headerExt ?? extensionForMime(mime) ?? "";
+  const id = buildSavedMediaId({ baseId: uuid, ext, originalFilename });
+  await writeSavedMediaBuffer({ dir, id, buffer });
+  return {
+    kind: "handoff",
+    media: {
+      path: path.join(dir, id),
+      size: buffer.byteLength,
+      contentType: mime,
+    },
+  };
 }
 
 /**

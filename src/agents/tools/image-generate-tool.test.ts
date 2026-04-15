@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_IMAGE_BYTES } from "../../media/constants.js";
 
 let imageGenerationRuntime: typeof import("../../image-generation/runtime.js");
 let imageOps: typeof import("../../media/image-ops.js");
@@ -124,11 +125,14 @@ function stubEditedImageFlow(params?: { width?: number; height?: number }) {
       height: params.height,
     });
   }
-  vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValue({
-    path: "/tmp/edited.png",
-    id: "edited.png",
-    size: 7,
-    contentType: "image/png",
+  vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValue({
+    kind: "managed",
+    media: {
+      path: "/tmp/edited.png",
+      id: "edited.png",
+      size: 7,
+      contentType: "image/png",
+    },
   });
   return generateImage;
 }
@@ -330,18 +334,24 @@ describe("createImageGenerateTool", () => {
         },
       ],
     });
-    const saveMediaBuffer = vi.spyOn(mediaStore, "saveMediaBuffer");
+    const saveMediaBuffer = vi.spyOn(mediaStore, "saveMediaBufferWithHandoff");
     saveMediaBuffer.mockResolvedValueOnce({
-      path: "/tmp/generated-1.png",
-      id: "generated-1.png",
-      size: 5,
-      contentType: "image/png",
+      kind: "managed",
+      media: {
+        path: "/tmp/generated-1.png",
+        id: "generated-1.png",
+        size: 5,
+        contentType: "image/png",
+      },
     });
     saveMediaBuffer.mockResolvedValueOnce({
-      path: "/tmp/generated-2.png",
-      id: "generated-2.png",
-      size: 5,
-      contentType: "image/png",
+      kind: "managed",
+      media: {
+        path: "/tmp/generated-2.png",
+        id: "generated-2.png",
+        size: 5,
+        contentType: "image/png",
+      },
     });
 
     const tool = createImageGenerateTool({
@@ -394,7 +404,7 @@ describe("createImageGenerateTool", () => {
       Buffer.from("png-1"),
       "image/png",
       "tool-image-generation",
-      undefined,
+      MAX_IMAGE_BYTES,
       "cats/output.png",
     );
     expect(saveMediaBuffer).toHaveBeenNthCalledWith(
@@ -402,7 +412,7 @@ describe("createImageGenerateTool", () => {
       Buffer.from("png-2"),
       "image/png",
       "tool-image-generation",
-      undefined,
+      MAX_IMAGE_BYTES,
       "cats/output.png",
     );
     expect(result).toMatchObject({
@@ -470,11 +480,14 @@ describe("createImageGenerateTool", () => {
         },
       ],
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValueOnce({
-      path: "/home/openclaw/.openclaw/media/tool-image-generation/kodo_sawaki_zazen---3337a0ed-898a-4572-8950-0d288719f4f8.jpg",
-      id: "kodo_sawaki_zazen---3337a0ed-898a-4572-8950-0d288719f4f8.jpg",
-      size: 8,
-      contentType: "image/jpeg",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValueOnce({
+      kind: "managed",
+      media: {
+        path: "/home/openclaw/.openclaw/media/tool-image-generation/kodo_sawaki_zazen---3337a0ed-898a-4572-8950-0d288719f4f8.jpg",
+        id: "kodo_sawaki_zazen---3337a0ed-898a-4572-8950-0d288719f4f8.jpg",
+        size: 8,
+        contentType: "image/jpeg",
+      },
     });
 
     const tool = createImageGenerateTool({
@@ -662,11 +675,14 @@ describe("createImageGenerateTool", () => {
       width: 3200,
       height: 1800,
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValue({
-      path: "/tmp/edited.png",
-      id: "edited.png",
-      size: 7,
-      contentType: "image/png",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValue({
+      kind: "managed",
+      media: {
+        path: "/tmp/edited.png",
+        id: "edited.png",
+        size: 7,
+        contentType: "image/png",
+      },
     });
 
     const tool = createToolWithPrimaryImageModel("openai/gpt-image-1", {
@@ -761,11 +777,14 @@ describe("createImageGenerateTool", () => {
         },
       ],
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValue({
-      path: "/tmp/generated.png",
-      id: "generated.png",
-      size: 7,
-      contentType: "image/png",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValue({
+      kind: "managed",
+      media: {
+        path: "/tmp/generated.png",
+        id: "generated.png",
+        size: 7,
+        contentType: "image/png",
+      },
     });
 
     const tool = createToolWithPrimaryImageModel("openai/gpt-image-1");
@@ -811,11 +830,14 @@ describe("createImageGenerateTool", () => {
         normalizedAspectRatio: "16:9",
       },
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValue({
-      path: "/tmp/generated.png",
-      id: "generated.png",
-      size: 7,
-      contentType: "image/png",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValue({
+      kind: "managed",
+      media: {
+        path: "/tmp/generated.png",
+        id: "generated.png",
+        size: 7,
+        contentType: "image/png",
+      },
     });
 
     const tool = createToolWithPrimaryImageModel("minimax/image-01");
@@ -1020,11 +1042,14 @@ describe("createImageGenerateTool", () => {
       buffer: Buffer.from("input-image"),
       contentType: "image/png",
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValue({
-      path: "/tmp/edited.png",
-      id: "edited.png",
-      size: 7,
-      contentType: "image/png",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValue({
+      kind: "managed",
+      media: {
+        path: "/tmp/edited.png",
+        id: "edited.png",
+        size: 7,
+        contentType: "image/png",
+      },
     });
 
     const tool = createToolWithPrimaryImageModel("fal/fal-ai/flux/dev", {

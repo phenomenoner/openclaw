@@ -3,7 +3,8 @@ import { loadConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { saveMediaBuffer } from "../../media/store.js";
+import { MAX_VIDEO_BYTES } from "../../media/constants.js";
+import { saveMediaBufferWithHandoff } from "../../media/store.js";
 import { loadWebMedia } from "../../media/web-media.js";
 import { readSnakeCaseParamRaw } from "../../param-key.js";
 import { resolveUserPath } from "../../utils.js";
@@ -611,18 +612,27 @@ async function executeVideoGenerationJob(params: {
     );
   }
 
-  const savedVideos = await Promise.all(
+  const savedVideoResultsRaw = await Promise.all(
     bufferVideos.map((video) =>
-      saveMediaBuffer(
+      saveMediaBufferWithHandoff(
         video.buffer,
         video.mimeType,
         "tool-video-generation",
-        undefined,
+        MAX_VIDEO_BYTES,
         params.filename || video.fileName,
       ),
     ),
   );
-  const totalCount = savedVideos.length + urlOnlyVideos.length;
+  const savedVideoResults = savedVideoResultsRaw.map((entry) =>
+    "kind" in entry ? entry : { kind: "managed" as const, media: entry },
+  );
+  const savedVideos = savedVideoResults.flatMap((entry) =>
+    entry.kind === "managed" ? [entry.media] : [],
+  );
+  const handoffVideos = savedVideoResults.flatMap((entry) =>
+    entry.kind === "handoff" ? [entry.media] : [],
+  );
+  const totalCount = savedVideos.length + handoffVideos.length + urlOnlyVideos.length;
   const requestedDurationSeconds =
     result.normalization?.durationSeconds?.requested ??
     (typeof result.metadata?.requestedDurationSeconds === "number" &&
@@ -684,6 +694,10 @@ async function executeVideoGenerationJob(params: {
       ? `Duration normalized: requested ${requestedDurationSeconds}s; used ${normalizedDurationSeconds}s.`
       : null,
     ...savedVideos.map((video) => `MEDIA:${video.path}`),
+    ...handoffVideos.map(
+      (video) =>
+        `Generated video exceeded ${Math.round(MAX_VIDEO_BYTES / (1024 * 1024))}MB inline save cap, saved to ${video.path} (${(video.size / (1024 * 1024)).toFixed(1)}MB).`,
+    ),
     ...urlOnlyVideos.map((video) => `MEDIA:${video.url}`),
   ].filter((entry): entry is string => Boolean(entry));
 
@@ -702,7 +716,10 @@ async function executeVideoGenerationJob(params: {
       media: {
         mediaUrls: allMediaUrls,
       },
-      paths: allMediaUrls,
+      paths: [...allMediaUrls, ...handoffVideos.map((video) => video.path)],
+      ...(handoffVideos.length > 0
+        ? { handoffPaths: handoffVideos.map((video) => video.path) }
+        : {}),
       ...buildTaskRunDetails(params.taskHandle),
       ...buildMediaReferenceDetails({
         entries: params.loadedReferenceImages,

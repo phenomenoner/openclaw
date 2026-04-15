@@ -12,8 +12,9 @@ import type {
   ImageGenerationResolution,
   ImageGenerationSourceImage,
 } from "../../image-generation/types.js";
+import { MAX_IMAGE_BYTES } from "../../media/constants.js";
 import { getImageMetadata } from "../../media/image-ops.js";
-import { saveMediaBuffer } from "../../media/store.js";
+import { saveMediaBufferWithHandoff } from "../../media/store.js";
 import { loadWebMedia } from "../../media/web-media.js";
 import { getProviderEnvVars } from "../../secrets/provider-env-vars.js";
 import { resolveUserPath } from "../../utils.js";
@@ -536,27 +537,40 @@ export function createImageGenerateTool(options?: {
           result.metadata.requestedSize === size &&
           Boolean(normalizedAspectRatio));
 
-      const savedImages = await Promise.all(
+      const savedImageResultsRaw = await Promise.all(
         result.images.map((image) =>
-          saveMediaBuffer(
+          saveMediaBufferWithHandoff(
             image.buffer,
             image.mimeType,
             "tool-image-generation",
-            undefined,
+            MAX_IMAGE_BYTES,
             filename || image.fileName,
           ),
         ),
+      );
+      const savedImageResults = savedImageResultsRaw.map((entry) =>
+        "kind" in entry ? entry : { kind: "managed" as const, media: entry },
+      );
+      const savedImages = savedImageResults.flatMap((entry) =>
+        entry.kind === "managed" ? [entry.media] : [],
+      );
+      const handoffImages = savedImageResults.flatMap((entry) =>
+        entry.kind === "handoff" ? [entry.media] : [],
       );
 
       const revisedPrompts = result.images
         .map((image) => image.revisedPrompt?.trim())
         .filter((entry): entry is string => Boolean(entry));
       const lines = [
-        `Generated ${savedImages.length} image${savedImages.length === 1 ? "" : "s"} with ${result.provider}/${result.model}.`,
+        `Generated ${savedImages.length + handoffImages.length} image${savedImages.length + handoffImages.length === 1 ? "" : "s"} with ${result.provider}/${result.model}.`,
         ...(warning ? [`Warning: ${warning}`] : []),
         // Show the actual saved paths so the model does not invent a bogus
         // local path when it references the generated image in a follow-up reply.
         ...savedImages.map((image) => `MEDIA:${image.path}`),
+        ...handoffImages.map(
+          (image) =>
+            `Generated image exceeded ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))}MB inline save cap, saved to ${image.path} (${(image.size / (1024 * 1024)).toFixed(1)}MB).`,
+        ),
       ];
 
       return {
@@ -564,11 +578,17 @@ export function createImageGenerateTool(options?: {
         details: {
           provider: result.provider,
           model: result.model,
-          count: savedImages.length,
+          count: savedImages.length + handoffImages.length,
           media: {
             mediaUrls: savedImages.map((image) => image.path),
           },
-          paths: savedImages.map((image) => image.path),
+          paths: [
+            ...savedImages.map((image) => image.path),
+            ...handoffImages.map((image) => image.path),
+          ],
+          ...(handoffImages.length > 0
+            ? { handoffPaths: handoffImages.map((image) => image.path) }
+            : {}),
           ...buildMediaReferenceDetails({
             entries: loadedReferenceImages,
             singleKey: "image",

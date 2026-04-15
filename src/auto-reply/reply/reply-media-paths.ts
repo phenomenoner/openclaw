@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveSendableOutboundReplyParts } from "openclaw/plugin-sdk/reply-payload";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
@@ -7,7 +8,7 @@ import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../../agents/tool-fs-policy.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
-import { saveMediaSource } from "../../media/store.js";
+import { MEDIA_MAX_BYTES, saveMediaSource } from "../../media/store.js";
 import { resolveConfigDir } from "../../utils.js";
 import type { ReplyPayload } from "../types.js";
 
@@ -18,6 +19,69 @@ const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.-]*:/;
 const HAS_FILE_EXT_RE = /\.\w{1,10}$/;
 const AGENT_STATE_MEDIA_DIRNAME = path.join(".openclaw", "media");
 const MANAGED_GLOBAL_MEDIA_SUBDIRS = new Set(["outbound"]);
+function resolveOversizeMediaHandoffDir(): string {
+  return process.env.OPENCLAW_OVERSIZE_MEDIA_DIR?.trim() || "/workspace/openclaw-oversize-media";
+}
+
+type OversizeMediaHandoff = {
+  originalPath: string;
+  handoffPath: string;
+  size: number;
+};
+
+function isFileUrl(value: string): boolean {
+  return FILE_URL_RE.test(value);
+}
+
+function resolveLocalMediaFilesystemPath(media: string): string | null {
+  if (isFileUrl(media)) {
+    try {
+      return new URL(media).pathname;
+    } catch {
+      return null;
+    }
+  }
+  return path.isAbsolute(media) ? media : null;
+}
+
+function formatMediaSizeForUser(size: number): string {
+  return `${(size / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+async function moveOversizeMediaToWorkspace(
+  mediaPath: string,
+): Promise<OversizeMediaHandoff | null> {
+  const stat = await fs.stat(mediaPath).catch(() => null);
+  if (!stat?.isFile() || stat.size <= MEDIA_MAX_BYTES) {
+    return null;
+  }
+
+  const handoffDir = resolveOversizeMediaHandoffDir();
+  await fs.mkdir(handoffDir, { recursive: true, mode: 0o755 });
+  const parsed = path.parse(mediaPath);
+  const handoffPath = path.join(handoffDir, `${parsed.name}-${Date.now()}${parsed.ext || ""}`);
+  if (path.resolve(mediaPath) !== path.resolve(handoffPath)) {
+    await fs.copyFile(mediaPath, handoffPath);
+  }
+
+  return {
+    originalPath: mediaPath,
+    handoffPath,
+    size: stat.size,
+  };
+}
+
+function appendOversizeMediaNotes(
+  text: string | undefined,
+  notes: readonly string[],
+): string | undefined {
+  if (notes.length === 0) {
+    return text;
+  }
+  const existing = text?.trim();
+  const noteBlock = notes.join("\n");
+  return existing ? `${existing}\n\n${noteBlock}` : noteBlock;
+}
 
 function isPathInside(root: string, candidate: string): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(candidate));
@@ -195,6 +259,7 @@ export function createReplyMediaPathNormalizer(params: {
     }
 
     const normalizedMedia: string[] = [];
+    const oversizeNotes: string[] = [];
     const seen = new Set<string>();
     for (const media of mediaList) {
       let normalized: string;
@@ -208,12 +273,28 @@ export function createReplyMediaPathNormalizer(params: {
         continue;
       }
       seen.add(normalized);
+
+      const mediaPath = resolveLocalMediaFilesystemPath(normalized);
+      if (mediaPath) {
+        const handoff = await moveOversizeMediaToWorkspace(mediaPath).catch((err) => {
+          logVerbose(`failed to hand off oversized media ${mediaPath}: ${String(err)}`);
+          return null;
+        });
+        if (handoff) {
+          oversizeNotes.push(
+            `Media too large for chat delivery, saved to ${handoff.handoffPath} (${formatMediaSizeForUser(handoff.size)}).`,
+          );
+          continue;
+        }
+      }
+
       normalizedMedia.push(normalized);
     }
 
     if (normalizedMedia.length === 0) {
       return {
         ...payload,
+        text: appendOversizeMediaNotes(payload.text, oversizeNotes),
         mediaUrl: undefined,
         mediaUrls: undefined,
       };
@@ -221,6 +302,7 @@ export function createReplyMediaPathNormalizer(params: {
 
     return {
       ...payload,
+      text: appendOversizeMediaNotes(payload.text, oversizeNotes),
       mediaUrl: normalizedMedia[0],
       mediaUrls: normalizedMedia,
     };

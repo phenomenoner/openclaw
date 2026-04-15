@@ -1,5 +1,9 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { MAX_VIDEO_BYTES } from "../../media/constants.js";
 import * as mediaStore from "../../media/store.js";
 import * as videoGenerationRuntime from "../../video-generation/runtime.js";
 import * as videoGenerateBackground from "./video-generate-background.js";
@@ -87,11 +91,14 @@ describe("createVideoGenerateTool", () => {
       ],
       metadata: { taskId: "task-1" },
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValueOnce({
-      path: "/tmp/generated-lobster.mp4",
-      id: "generated-lobster.mp4",
-      size: 11,
-      contentType: "video/mp4",
+    const saveSpy = vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValueOnce({
+      kind: "managed",
+      media: {
+        path: "/tmp/generated-lobster.mp4",
+        id: "generated-lobster.mp4",
+        size: 11,
+        contentType: "video/mp4",
+      },
     });
 
     const tool = createVideoGenerateTool({
@@ -123,8 +130,58 @@ describe("createVideoGenerateTool", () => {
       paths: ["/tmp/generated-lobster.mp4"],
       metadata: { taskId: "task-1" },
     });
+    expect(saveSpy).toHaveBeenCalledWith(
+      Buffer.from("video-bytes"),
+      "video/mp4",
+      "tool-video-generation",
+      MAX_VIDEO_BYTES,
+      "lobster.mp4",
+    );
     expect(taskExecutorMocks.createRunningTaskRun).not.toHaveBeenCalled();
     expect(taskExecutorMocks.completeTaskRunByRunId).not.toHaveBeenCalled();
+  });
+
+  it("falls back to a workspace handoff path when a generated video exceeds the inline save cap", async () => {
+    const handoffRoot = await fs.mkdtemp(path.join(os.tmpdir(), "video-handoff-"));
+    vi.stubEnv("OPENCLAW_OVERSIZE_MEDIA_DIR", handoffRoot);
+    vi.spyOn(videoGenerationRuntime, "generateVideo").mockResolvedValue({
+      provider: "xai",
+      model: "grok-imagine-video",
+      attempts: [],
+      ignoredOverrides: [],
+      videos: [
+        {
+          buffer: Buffer.alloc(MAX_VIDEO_BYTES + 1, 7),
+          mimeType: "video/mp4",
+          fileName: "keepclose.mp4",
+        },
+      ],
+      metadata: { taskId: "task-oversize" },
+    });
+
+    const tool = createVideoGenerateTool({
+      config: asConfig({
+        agents: {
+          defaults: {
+            videoGenerationModel: { primary: "xai/grok-imagine-video" },
+          },
+        },
+      }),
+    });
+    if (!tool) {
+      throw new Error("expected video_generate tool");
+    }
+
+    const result = await tool.execute("call-oversize", { prompt: "keepclose" });
+    const text = (result.content?.[0] as { text: string } | undefined)?.text ?? "";
+
+    expect(text).toContain("Generated 1 video with xai/grok-imagine-video.");
+    expect(text).toContain("exceeded 16MB inline save cap, saved to");
+    expect(text).not.toContain("MEDIA:");
+    expect(result.details).toMatchObject({
+      handoffPaths: [expect.stringContaining(handoffRoot)],
+      media: { mediaUrls: [] },
+    });
   });
 
   it("surfaces url-only generated videos without saving local files", async () => {

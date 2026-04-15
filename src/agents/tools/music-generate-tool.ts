@@ -3,7 +3,8 @@ import { loadConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { saveMediaBuffer } from "../../media/store.js";
+import { MAX_AUDIO_BYTES } from "../../media/constants.js";
+import { saveMediaBufferWithHandoff } from "../../media/store.js";
 import { loadWebMedia } from "../../media/web-media.js";
 import { resolveMusicGenerationModeCapabilities } from "../../music-generation/capabilities.js";
 import { parseMusicGenerationModelRef } from "../../music-generation/model-ref.js";
@@ -359,16 +360,25 @@ async function executeMusicGenerationJob(params: {
       progressSummary: "Saving generated music",
     });
   }
-  const savedTracks = await Promise.all(
+  const savedTrackResultsRaw = await Promise.all(
     result.tracks.map((track) =>
-      saveMediaBuffer(
+      saveMediaBufferWithHandoff(
         track.buffer,
         track.mimeType,
         "tool-music-generation",
-        undefined,
+        MAX_AUDIO_BYTES,
         params.filename || track.fileName,
       ),
     ),
+  );
+  const savedTrackResults = savedTrackResultsRaw.map((entry) =>
+    "kind" in entry ? entry : { kind: "managed" as const, media: entry },
+  );
+  const savedTracks = savedTrackResults.flatMap((entry) =>
+    entry.kind === "managed" ? [entry.media] : [],
+  );
+  const handoffTracks = savedTrackResults.flatMap((entry) =>
+    entry.kind === "handoff" ? [entry.media] : [],
   );
   const ignoredOverrides = result.ignoredOverrides ?? [];
   const ignoredOverrideKeys = new Set(ignoredOverrides.map((entry) => entry.key));
@@ -394,7 +404,7 @@ async function executeMusicGenerationJob(params: {
       ? `Ignored unsupported overrides for ${result.provider}/${result.model}: ${ignoredOverrides.map((entry) => `${entry.key}=${String(entry.value)}`).join(", ")}.`
       : undefined;
   const lines = [
-    `Generated ${savedTracks.length} track${savedTracks.length === 1 ? "" : "s"} with ${result.provider}/${result.model}.`,
+    `Generated ${savedTracks.length + handoffTracks.length} track${savedTracks.length + handoffTracks.length === 1 ? "" : "s"} with ${result.provider}/${result.model}.`,
     ...(warning ? [`Warning: ${warning}`] : []),
     typeof requestedDurationSeconds === "number" &&
     typeof appliedDurationSeconds === "number" &&
@@ -403,6 +413,10 @@ async function executeMusicGenerationJob(params: {
       : null,
     ...(result.lyrics?.length ? ["Lyrics returned.", ...result.lyrics] : []),
     ...savedTracks.map((track) => `MEDIA:${track.path}`),
+    ...handoffTracks.map(
+      (track) =>
+        `Generated audio exceeded ${Math.round(MAX_AUDIO_BYTES / (1024 * 1024))}MB inline save cap, saved to ${track.path} (${(track.size / (1024 * 1024)).toFixed(1)}MB).`,
+    ),
   ].filter((entry): entry is string => Boolean(entry));
   return {
     provider: result.provider,
@@ -413,11 +427,17 @@ async function executeMusicGenerationJob(params: {
     details: {
       provider: result.provider,
       model: result.model,
-      count: savedTracks.length,
+      count: savedTracks.length + handoffTracks.length,
       media: {
         mediaUrls: savedTracks.map((track) => track.path),
       },
-      paths: savedTracks.map((track) => track.path),
+      paths: [
+        ...savedTracks.map((track) => track.path),
+        ...handoffTracks.map((track) => track.path),
+      ],
+      ...(handoffTracks.length > 0
+        ? { handoffPaths: handoffTracks.map((track) => track.path) }
+        : {}),
       ...buildTaskRunDetails(params.taskHandle),
       ...(!ignoredOverrideKeys.has("lyrics") && params.lyrics
         ? { requestedLyrics: params.lyrics }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { MAX_AUDIO_BYTES } from "../../media/constants.js";
 import * as mediaStore from "../../media/store.js";
 import * as musicGenerationRuntime from "../../music-generation/runtime.js";
 import * as musicGenerateBackground from "./music-generate-background.js";
@@ -86,11 +87,14 @@ describe("createMusicGenerateTool", () => {
       lyrics: ["wake the city up"],
       metadata: { taskId: "music-task-1" },
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValueOnce({
-      path: "/tmp/generated-night-drive.mp3",
-      id: "generated-night-drive.mp3",
-      size: 11,
-      contentType: "audio/mpeg",
+    const saveSpy = vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValueOnce({
+      kind: "managed",
+      media: {
+        path: "/tmp/generated-night-drive.mp3",
+        id: "generated-night-drive.mp3",
+        size: 11,
+        contentType: "audio/mpeg",
+      },
     });
 
     const tool = createMusicGenerateTool({
@@ -128,6 +132,13 @@ describe("createMusicGenerateTool", () => {
       paths: ["/tmp/generated-night-drive.mp3"],
       metadata: { taskId: "music-task-1" },
     });
+    expect(saveSpy).toHaveBeenCalledWith(
+      Buffer.from("music-bytes"),
+      "audio/mpeg",
+      "tool-music-generation",
+      MAX_AUDIO_BYTES,
+      "night-drive.mp3",
+    );
     expect(taskExecutorMocks.createRunningTaskRun).not.toHaveBeenCalled();
     expect(taskExecutorMocks.completeTaskRunByRunId).not.toHaveBeenCalled();
   });
@@ -162,11 +173,14 @@ describe("createMusicGenerateTool", () => {
       ],
       metadata: { taskId: "music-task-1" },
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValueOnce({
-      path: "/tmp/generated-night-drive.mp3",
-      id: "generated-night-drive.mp3",
-      size: 11,
-      contentType: "audio/mpeg",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValueOnce({
+      kind: "managed",
+      media: {
+        path: "/tmp/generated-night-drive.mp3",
+        id: "generated-night-drive.mp3",
+        size: 11,
+        contentType: "audio/mpeg",
+      },
     });
 
     let scheduledWork: (() => Promise<void>) | undefined;
@@ -309,11 +323,14 @@ describe("createMusicGenerateTool", () => {
         },
       ],
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValueOnce({
-      path: "/tmp/molty-anthem.mp3",
-      id: "molty-anthem.mp3",
-      size: 11,
-      contentType: "audio/mpeg",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValueOnce({
+      kind: "managed",
+      media: {
+        path: "/tmp/molty-anthem.mp3",
+        id: "molty-anthem.mp3",
+        size: 11,
+        contentType: "audio/mpeg",
+      },
     });
 
     const tool = createMusicGenerateTool({
@@ -380,11 +397,14 @@ describe("createMusicGenerateTool", () => {
         normalizedDurationSeconds: 30,
       },
     });
-    vi.spyOn(mediaStore, "saveMediaBuffer").mockResolvedValueOnce({
-      path: "/tmp/generated-night-drive.mp3",
-      id: "generated-night-drive.mp3",
-      size: 11,
-      contentType: "audio/mpeg",
+    vi.spyOn(mediaStore, "saveMediaBufferWithHandoff").mockResolvedValueOnce({
+      kind: "managed",
+      media: {
+        path: "/tmp/generated-night-drive.mp3",
+        id: "generated-night-drive.mp3",
+        size: 11,
+        contentType: "audio/mpeg",
+      },
     });
 
     const tool = createMusicGenerateTool({
