@@ -57,6 +57,7 @@ export type PluginHookName =
   | "before_prompt_build"
   | "before_agent_start"
   | "before_agent_reply"
+  | "after_model_response"
   | "llm_input"
   | "llm_output"
   | "agent_end"
@@ -88,6 +89,7 @@ export const PLUGIN_HOOK_NAMES = [
   "before_prompt_build",
   "before_agent_start",
   "before_agent_reply",
+  "after_model_response",
   "llm_input",
   "llm_output",
   "agent_end",
@@ -128,6 +130,7 @@ export const isPluginHookName = (hookName: unknown): hookName is PluginHookName 
 export const PROMPT_INJECTION_HOOK_NAMES = [
   "before_prompt_build",
   "before_agent_start",
+  "after_model_response",
 ] as const satisfies readonly PluginHookName[];
 
 export type PromptInjectionHookName = (typeof PROMPT_INJECTION_HOOK_NAMES)[number];
@@ -158,6 +161,33 @@ export type PluginHookBeforeAgentReplyResult = {
   handled: boolean;
   reply?: ReplyPayload;
   reason?: string;
+};
+
+export type PluginHookAfterModelResponseEvent = {
+  runId: string;
+  sessionId: string;
+  provider: string;
+  model: string;
+  passIndex: number;
+  assistantTexts: string[];
+  lastAssistant?: unknown;
+  usage?: {
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    total?: number;
+  };
+};
+
+export type PluginHookAfterModelResponseResult = {
+  requestFollowUpPass?: {
+    reason?: string;
+    passInput?: {
+      prependContext?: string;
+      appendSystemContext?: string;
+    };
+  };
 };
 
 export type PluginHookLlmInputEvent = {
@@ -585,6 +615,13 @@ export type PluginHookHandlerMap = {
     event: PluginHookBeforeAgentReplyEvent,
     ctx: PluginHookAgentContext,
   ) => Promise<PluginHookBeforeAgentReplyResult | void> | PluginHookBeforeAgentReplyResult | void;
+  after_model_response: (
+    event: PluginHookAfterModelResponseEvent,
+    ctx: PluginHookAgentContext,
+  ) =>
+    | Promise<PluginHookAfterModelResponseResult | void>
+    | PluginHookAfterModelResponseResult
+    | void;
   llm_input: (event: PluginHookLlmInputEvent, ctx: PluginHookAgentContext) => Promise<void> | void;
   llm_output: (
     event: PluginHookLlmOutputEvent,

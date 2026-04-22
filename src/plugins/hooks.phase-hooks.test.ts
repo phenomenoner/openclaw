@@ -3,6 +3,7 @@ import { createHookRunner } from "./hooks.js";
 import { addStaticTestHooks } from "./hooks.test-helpers.js";
 import { createEmptyPluginRegistry, type PluginRegistry } from "./registry.js";
 import type {
+  PluginHookAfterModelResponseResult,
   PluginHookBeforeModelResolveResult,
   PluginHookBeforePromptBuildResult,
 } from "./types.js";
@@ -114,5 +115,86 @@ describe("phase hooks merger", () => {
     },
   ] as const)("$name", async ({ hookName, hooks, expected }) => {
     await expectPhaseHookMerge({ hookName, hooks, expected });
+  });
+});
+
+describe("after_model_response hook runner", () => {
+  let registry: PluginRegistry;
+
+  beforeEach(() => {
+    registry = createEmptyPluginRegistry();
+  });
+
+  it("continues past empty follow-up requests until a meaningful request wins", async () => {
+    addStaticTestHooks<PluginHookAfterModelResponseResult>(registry, {
+      hookName: "after_model_response",
+      hooks: [
+        {
+          pluginId: "empty",
+          result: { requestFollowUpPass: { passInput: {} } },
+          priority: 10,
+        },
+        {
+          pluginId: "meaningful",
+          result: {
+            requestFollowUpPass: {
+              passInput: {
+                prependContext: "tighten",
+              },
+            },
+          },
+          priority: 1,
+        },
+      ],
+    });
+
+    const runner = createHookRunner(registry);
+    const result = await runner.runAfterModelResponse(
+      {
+        runId: "run-1",
+        sessionId: "session-1",
+        provider: "openai",
+        model: "gpt-test",
+        passIndex: 1,
+        assistantTexts: ["draft"],
+      },
+      {},
+    );
+
+    expect(result).toEqual({
+      requestFollowUpPass: {
+        passInput: {
+          prependContext: "tighten",
+        },
+      },
+    });
+  });
+
+  it("returns undefined when every follow-up request is empty", async () => {
+    addStaticTestHooks<PluginHookAfterModelResponseResult>(registry, {
+      hookName: "after_model_response",
+      hooks: [
+        {
+          pluginId: "empty",
+          result: { requestFollowUpPass: { passInput: {} } },
+          priority: 10,
+        },
+      ],
+    });
+
+    const runner = createHookRunner(registry);
+    const result = await runner.runAfterModelResponse(
+      {
+        runId: "run-1",
+        sessionId: "session-1",
+        provider: "openai",
+        model: "gpt-test",
+        passIndex: 1,
+        assistantTexts: ["draft"],
+      },
+      {},
+    );
+
+    expect(result).toBeUndefined();
   });
 });

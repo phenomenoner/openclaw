@@ -749,7 +749,7 @@ export async function runEmbeddedPiAgent(
           }
           if (decision.annotations && Object.keys(decision.annotations).length > 0) {
             const sortedAnnotations = Object.fromEntries(
-              Object.entries(decision.annotations).sort(([a], [b]) => a.localeCompare(b)),
+              Object.entries(decision.annotations).toSorted(([a], [b]) => a.localeCompare(b)),
             );
             details.push(`annotations: ${JSON.stringify(sortedAnnotations)}`);
           }

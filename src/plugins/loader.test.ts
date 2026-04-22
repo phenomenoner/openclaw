@@ -3850,7 +3850,7 @@ module.exports = {
     ).toBe(true);
   });
 
-  it("blocks before_prompt_build but preserves legacy model overrides when prompt injection is disabled", async () => {
+  it("blocks prompt-injection hooks but preserves legacy model overrides when prompt injection is disabled", async () => {
     useNoBundledPlugins();
     const plugin = writePlugin({
       id: "hook-policy",
@@ -3861,6 +3861,14 @@ module.exports = {
     prependContext: "legacy",
     modelOverride: "demo-legacy-model",
     providerOverride: "demo-legacy-provider",
+  }));
+  api.on("after_model_response", () => ({
+    requestFollowUpPass: {
+      passInput: {
+        prependContext: "follow up",
+        appendSystemContext: "system follow up",
+      },
+    },
   }));
   api.on("before_model_resolve", () => ({ providerOverride: "demo-explicit-provider" }));
 } };`,
@@ -3896,7 +3904,7 @@ module.exports = {
         "blocked by plugins.entries.hook-policy.hooks.allowPromptInjection=false",
       ),
     );
-    expect(blockedDiagnostics).toHaveLength(1);
+    expect(blockedDiagnostics).toHaveLength(2);
     const constrainedDiagnostics = registry.diagnostics.filter((diag) =>
       diag.message.includes(
         "prompt fields constrained by plugins.entries.hook-policy.hooks.allowPromptInjection=false",
@@ -3913,6 +3921,13 @@ module.exports = {
       body: `module.exports = { id: "hook-policy-default", register(api) {
   api.on("before_prompt_build", () => ({ prependContext: "prepend" }));
   api.on("before_agent_start", () => ({ prependContext: "legacy" }));
+  api.on("after_model_response", () => ({
+    requestFollowUpPass: {
+      passInput: {
+        prependContext: "follow up",
+      },
+    },
+  }));
 } };`,
     });
 
@@ -3926,6 +3941,7 @@ module.exports = {
     expect(registry.typedHooks.map((entry) => entry.hookName)).toEqual([
       "before_prompt_build",
       "before_agent_start",
+      "after_model_response",
     ]);
   });
 

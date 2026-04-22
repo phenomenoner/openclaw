@@ -292,6 +292,46 @@ export {
 };
 
 const MAX_BTW_SNAPSHOT_MESSAGES = 100;
+const MAX_AFTER_MODEL_RESPONSE_PASS_INDEX = 2;
+
+export function buildAfterModelResponseFollowUpPass(params: {
+  baseSystemPrompt?: string;
+  passIndex: number;
+  maxPassIndex?: number;
+  requestFollowUpPass?: {
+    passInput?: {
+      prependContext?: string;
+      appendSystemContext?: string;
+    };
+  };
+}):
+  | {
+      prompt: string;
+      systemPrompt?: string;
+    }
+  | undefined {
+  const maxPassIndex = params.maxPassIndex ?? MAX_AFTER_MODEL_RESPONSE_PASS_INDEX;
+  if (params.passIndex >= maxPassIndex) {
+    return undefined;
+  }
+  const rawPrompt = params.requestFollowUpPass?.passInput?.prependContext;
+  const rawAppendSystemContext = params.requestFollowUpPass?.passInput?.appendSystemContext;
+  const prompt = typeof rawPrompt === "string" ? rawPrompt.trim() : undefined;
+  const appendSystemContext =
+    typeof rawAppendSystemContext === "string" ? rawAppendSystemContext.trim() : undefined;
+  if (!prompt && !appendSystemContext) {
+    return undefined;
+  }
+  return {
+    prompt:
+      prompt ??
+      `Run one bounded follow-up pass on your immediately previous answer. Tighten it instead of starting over.`,
+    systemPrompt: composeSystemPromptWithHookContext({
+      baseSystemPrompt: params.baseSystemPrompt,
+      appendSystemContext,
+    }),
+  };
+}
 
 export function resolveUnknownToolGuardThreshold(loopDetection?: {
   enabled?: boolean;
@@ -2079,22 +2119,95 @@ export async function runEmbeddedAttempt(
           }
 
           if (!skipPromptSubmission) {
-            finalPromptText = effectivePrompt;
-            const btwSnapshotMessages = activeSession.messages.slice(-MAX_BTW_SNAPSHOT_MESSAGES);
-            updateActiveEmbeddedRunSnapshot(params.sessionId, {
-              transcriptLeafId,
-              messages: btwSnapshotMessages,
-              inFlightPrompt: effectivePrompt,
-            });
+            const baseSystemPromptText = systemPromptText;
+            let followUpSystemPromptApplied = false;
+            let nextPrompt = effectivePrompt;
+            let nextPromptImages = imageResult.images;
+            let passIndex = 1;
 
-            // Only pass images option if there are actually images to pass
-            // This avoids potential issues with models that don't expect the images parameter
-            if (imageResult.images.length > 0) {
-              await abortable(
-                activeSession.prompt(effectivePrompt, { images: imageResult.images }),
-              );
-            } else {
-              await abortable(activeSession.prompt(effectivePrompt));
+            try {
+              for (;;) {
+                finalPromptText = nextPrompt;
+                const btwSnapshotMessages =
+                  activeSession.messages.slice(-MAX_BTW_SNAPSHOT_MESSAGES);
+                updateActiveEmbeddedRunSnapshot(params.sessionId, {
+                  transcriptLeafId,
+                  messages: btwSnapshotMessages,
+                  inFlightPrompt: nextPrompt,
+                });
+
+                if (nextPromptImages.length > 0) {
+                  await abortable(activeSession.prompt(nextPrompt, { images: nextPromptImages }));
+                } else {
+                  await abortable(activeSession.prompt(nextPrompt));
+                }
+
+                if (!hookRunner?.hasHooks("after_model_response")) {
+                  break;
+                }
+
+                const passMessagesSnapshot = activeSession.messages.slice();
+                const passLastAssistant = passMessagesSnapshot
+                  .slice()
+                  .toReversed()
+                  .find((message) => message.role === "assistant");
+                const passAssistantTexts = assistantTexts.length
+                  ? assistantTexts
+                  : typeof passLastAssistant?.content === "string"
+                    ? [passLastAssistant.content]
+                    : [];
+
+                const afterModelResponseResult = await hookRunner
+                  .runAfterModelResponse(
+                    {
+                      runId: params.runId,
+                      sessionId: params.sessionId,
+                      provider: params.provider,
+                      model: params.modelId,
+                      passIndex,
+                      assistantTexts: passAssistantTexts,
+                      lastAssistant: passLastAssistant,
+                      usage: getUsageTotals(),
+                    },
+                    {
+                      runId: params.runId,
+                      agentId: hookAgentId,
+                      sessionKey: params.sessionKey,
+                      sessionId: params.sessionId,
+                      workspaceDir: params.workspaceDir,
+                      messageProvider: params.messageProvider ?? undefined,
+                      trigger: params.trigger,
+                      channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+                    },
+                  )
+                  .catch((err) => {
+                    log.warn(`after_model_response hook failed: ${String(err)}`);
+                    return undefined;
+                  });
+
+                const followUpPass = buildAfterModelResponseFollowUpPass({
+                  baseSystemPrompt: baseSystemPromptText,
+                  passIndex,
+                  requestFollowUpPass: afterModelResponseResult?.requestFollowUpPass,
+                });
+                if (!followUpPass) {
+                  break;
+                }
+
+                if (followUpPass.systemPrompt) {
+                  applySystemPromptOverrideToSession(activeSession, followUpPass.systemPrompt);
+                  systemPromptText = followUpPass.systemPrompt;
+                  followUpSystemPromptApplied = true;
+                }
+                passIndex += 1;
+                nextPrompt = followUpPass.prompt;
+                nextPromptImages = [];
+              }
+            } finally {
+              if (followUpSystemPromptApplied) {
+                applySystemPromptOverrideToSession(activeSession, baseSystemPromptText);
+                systemPromptText = baseSystemPromptText;
+              }
             }
           }
         } catch (err) {

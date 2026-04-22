@@ -5,6 +5,7 @@ import { appendBootstrapPromptWarning } from "../../bootstrap-budget.js";
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "../../system-prompt-cache-boundary.js";
 import { buildAgentSystemPrompt } from "../../system-prompt.js";
 import {
+  buildAfterModelResponseFollowUpPass,
   buildAfterTurnRuntimeContext,
   composeSystemPromptWithHookContext,
   decodeHtmlEntitiesInObject,
@@ -198,6 +199,52 @@ describe("composeSystemPromptWithHookContext", () => {
     expect(turns[2]?.prompt.startsWith("hello once more")).toBe(true);
     expect(turns[0]?.prompt).toContain("[Bootstrap truncation warning]");
     expect(turns[2]?.prompt).toContain("[Bootstrap truncation warning]");
+  });
+});
+
+describe("buildAfterModelResponseFollowUpPass", () => {
+  it("returns a bounded follow-up prompt when the hook requests one", () => {
+    expect(
+      buildAfterModelResponseFollowUpPass({
+        baseSystemPrompt: "base system",
+        passIndex: 1,
+        requestFollowUpPass: {
+          passInput: {
+            prependContext: "  tighten the answer  ",
+            appendSystemContext: "  verify every claim  ",
+          },
+        },
+      }),
+    ).toEqual({
+      prompt: "tighten the answer",
+      systemPrompt: "base system\n\nverify every claim",
+    });
+  });
+
+  it("blocks follow-up execution once the bounded prototype ceiling is reached", () => {
+    expect(
+      buildAfterModelResponseFollowUpPass({
+        baseSystemPrompt: "base system",
+        passIndex: 2,
+        requestFollowUpPass: {
+          passInput: {
+            prependContext: "keep going",
+          },
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("rejects empty follow-up requests", () => {
+    expect(
+      buildAfterModelResponseFollowUpPass({
+        baseSystemPrompt: "base system",
+        passIndex: 1,
+        requestFollowUpPass: {
+          passInput: {},
+        },
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -444,9 +491,7 @@ describe("resolveUnknownToolGuardThreshold", () => {
   it("falls back to the default threshold when the override is non-positive", () => {
     expect(resolveUnknownToolGuardThreshold({ unknownToolThreshold: 0 })).toBe(10);
     expect(resolveUnknownToolGuardThreshold({ unknownToolThreshold: -5 })).toBe(10);
-    expect(
-      resolveUnknownToolGuardThreshold({ unknownToolThreshold: Number.NaN }),
-    ).toBe(10);
+    expect(resolveUnknownToolGuardThreshold({ unknownToolThreshold: Number.NaN })).toBe(10);
   });
 
   it("floors fractional overrides", () => {
@@ -1739,9 +1784,11 @@ describe("wrapStreamFnSanitizeMalformedToolCalls", () => {
     );
 
     const wrapped = wrapStreamFnSanitizeMalformedToolCalls(baseFn as never, new Set(["read"]));
-    const stream = wrapped({ api: "google-gemini" } as never, { messages } as never, {} as never) as
-      | FakeWrappedStream
-      | Promise<FakeWrappedStream>;
+    const stream = wrapped(
+      { api: "google-gemini" } as never,
+      { messages } as never,
+      {} as never,
+    ) as FakeWrappedStream | Promise<FakeWrappedStream>;
     await Promise.resolve(stream);
 
     expect(baseFn).toHaveBeenCalledTimes(1);

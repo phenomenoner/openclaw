@@ -13,6 +13,8 @@ import type {
   PluginHookAfterToolCallEvent,
   PluginHookAgentContext,
   PluginHookAgentEndEvent,
+  PluginHookAfterModelResponseEvent,
+  PluginHookAfterModelResponseResult,
   PluginHookBeforeAgentReplyEvent,
   PluginHookBeforeAgentReplyResult,
   PluginHookBeforeAgentStartEvent,
@@ -72,6 +74,8 @@ export type {
   PluginHookAgentContext,
   PluginHookBeforeAgentReplyEvent,
   PluginHookBeforeAgentReplyResult,
+  PluginHookAfterModelResponseEvent,
+  PluginHookAfterModelResponseResult,
   PluginHookBeforeAgentStartEvent,
   PluginHookBeforeAgentStartResult,
   PluginHookBeforeDispatchContext,
@@ -272,6 +276,16 @@ export function createHookRunner(
       return acc;
     }
     return next;
+  };
+
+  const hasMeaningfulAfterModelResponseFollowUpRequest = (
+    result: PluginHookAfterModelResponseResult | undefined,
+  ): boolean => {
+    const passInput = result?.requestFollowUpPass?.passInput;
+    return Boolean(
+      (typeof passInput?.prependContext === "string" && passInput.prependContext.trim()) ||
+      (typeof passInput?.appendSystemContext === "string" && passInput.appendSystemContext.trim()),
+    );
   };
 
   const handleHookError = (params: {
@@ -574,6 +588,34 @@ export function createHookRunner(
       event,
       ctx,
     );
+  }
+
+  /**
+   * Run after_model_response hook.
+   * Allows plugins to inspect a completed model pass and optionally request
+   * one bounded follow-up pass. Highest-priority valid request wins.
+   */
+  async function runAfterModelResponse(
+    event: PluginHookAfterModelResponseEvent,
+    ctx: PluginHookAgentContext,
+  ): Promise<PluginHookAfterModelResponseResult | undefined> {
+    const result = await runModifyingHook<
+      "after_model_response",
+      PluginHookAfterModelResponseResult
+    >("after_model_response", event, ctx, {
+      mergeResults: (acc, next) => {
+        if (hasMeaningfulAfterModelResponseFollowUpRequest(acc)) {
+          return acc as PluginHookAfterModelResponseResult;
+        }
+        if (hasMeaningfulAfterModelResponseFollowUpRequest(next)) {
+          return next;
+        }
+        return acc ?? next;
+      },
+      shouldStop: hasMeaningfulAfterModelResponseFollowUpRequest,
+      terminalLabel: "requestFollowUpPass",
+    });
+    return hasMeaningfulAfterModelResponseFollowUpRequest(result) ? result : undefined;
   }
 
   /**
@@ -1112,6 +1154,7 @@ export function createHookRunner(
     runBeforePromptBuild,
     runBeforeAgentStart,
     runBeforeAgentReply,
+    runAfterModelResponse,
     runLlmInput,
     runLlmOutput,
     runAgentEnd,
