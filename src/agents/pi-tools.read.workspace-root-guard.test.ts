@@ -30,10 +30,12 @@ function createToolHarness() {
 }
 
 async function loadModule() {
-  ({ wrapToolWorkspaceRootGuardWithOptions } = await import("./pi-tools.read.js"));
+  ({ wrapToolWorkspaceRootGuardWithOptions, resolveToolPathAgainstWorkspaceRoot } =
+    await import("./pi-tools.read.js"));
 }
 
 let wrapToolWorkspaceRootGuardWithOptions: typeof import("./pi-tools.read.js").wrapToolWorkspaceRootGuardWithOptions;
+let resolveToolPathAgainstWorkspaceRoot: typeof import("./pi-tools.read.js").resolveToolPathAgainstWorkspaceRoot;
 
 describe("wrapToolWorkspaceRootGuardWithOptions", () => {
   const root = "/tmp/root";
@@ -247,5 +249,27 @@ describe("wrapToolWorkspaceRootGuardWithOptions", () => {
       undefined,
       undefined,
     );
+  });
+
+  it("resolves home-relative workspace aliases against the OS home instead of nesting under root", () => {
+    vi.stubEnv("HOME", "/root");
+
+    expect(
+      resolveToolPathAgainstWorkspaceRoot({
+        filePath: ".openclaw/workspace/skills/engineering-execution-guardrails/SKILL.md",
+        root: "/root/.openclaw/workspace",
+      }),
+    ).toBe("/root/.openclaw/workspace/skills/engineering-execution-guardrails/SKILL.md");
+  });
+
+  it("leaves unrelated relative paths rooted in the workspace", () => {
+    vi.stubEnv("HOME", "/root");
+
+    expect(
+      resolveToolPathAgainstWorkspaceRoot({
+        filePath: "docs/readme.md",
+        root,
+      }),
+    ).toBe(path.resolve(root, "docs", "readme.md"));
   });
 });

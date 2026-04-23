@@ -456,6 +456,36 @@ function mapContainerPathToWorkspaceRoot(params: {
   return path.resolve(params.root, ...relative.split("/").filter(Boolean));
 }
 
+function resolveWorkspaceRootAliasPath(filePath: string, root: string): string {
+  const home = resolveOsHomeDir();
+  if (!home) {
+    return filePath;
+  }
+
+  const normalizedHome = path.resolve(home);
+  const normalizedRoot = path.resolve(root);
+  const rootRelativeToHome = path.relative(normalizedHome, normalizedRoot).replace(/\\/g, "/");
+  if (
+    !rootRelativeToHome ||
+    rootRelativeToHome === "." ||
+    rootRelativeToHome.startsWith("../") ||
+    rootRelativeToHome === ".." ||
+    path.isAbsolute(rootRelativeToHome)
+  ) {
+    return filePath;
+  }
+
+  const normalizedCandidate = path.posix.normalize(filePath.replace(/\\/g, "/"));
+  if (
+    normalizedCandidate !== rootRelativeToHome &&
+    !normalizedCandidate.startsWith(`${rootRelativeToHome}/`)
+  ) {
+    return filePath;
+  }
+
+  return path.resolve(normalizedHome, ...normalizedCandidate.split("/").filter(Boolean));
+}
+
 export function resolveToolPathAgainstWorkspaceRoot(params: {
   filePath: string;
   root: string;
@@ -466,10 +496,11 @@ export function resolveToolPathAgainstWorkspaceRoot(params: {
   if (isWindowsDrivePath(candidate)) {
     return path.win32.normalize(candidate);
   }
-  if (path.isAbsolute(candidate)) {
-    return path.resolve(candidate);
+  const workspaceAliasResolved = resolveWorkspaceRootAliasPath(candidate, params.root);
+  if (path.isAbsolute(workspaceAliasResolved)) {
+    return path.resolve(workspaceAliasResolved);
   }
-  return path.resolve(params.root, candidate || ".");
+  return path.resolve(params.root, workspaceAliasResolved || ".");
 }
 
 type MemoryFlushAppendOnlyWriteOptions = {
