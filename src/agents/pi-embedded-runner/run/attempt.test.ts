@@ -8,6 +8,7 @@ import {
   buildAfterModelResponseFollowUpPass,
   buildAfterTurnRuntimeContext,
   composeSystemPromptWithHookContext,
+  createAfterModelResponseReplyGate,
   decodeHtmlEntitiesInObject,
   mergeOrphanedTrailingUserPrompt,
   prependSystemPromptAddition,
@@ -235,6 +236,24 @@ describe("buildAfterModelResponseFollowUpPass", () => {
     ).toBeUndefined();
   });
 
+  it("honors hook-provided maxPassIndex for verifier-heavy plans", () => {
+    expect(
+      buildAfterModelResponseFollowUpPass({
+        baseSystemPrompt: "base system",
+        passIndex: 2,
+        requestFollowUpPass: {
+          maxPassIndex: 3,
+          passInput: {
+            prependContext: "verifier pass",
+          },
+        },
+      }),
+    ).toEqual({
+      prompt: "verifier pass",
+      systemPrompt: undefined,
+    });
+  });
+
   it("rejects empty follow-up requests", () => {
     expect(
       buildAfterModelResponseFollowUpPass({
@@ -245,6 +264,32 @@ describe("buildAfterModelResponseFollowUpPass", () => {
         },
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("createAfterModelResponseReplyGate", () => {
+  it("suppresses the intermediate pass and flushes only the final buffered reply", async () => {
+    const emitted: string[] = [];
+    const gate = createAfterModelResponseReplyGate({
+      enabled: true,
+      onBlockReply: async (payload) => {
+        emitted.push(payload.text ?? "");
+      },
+      onBlockReplyFlush: async () => {
+        emitted.push("<flush>");
+      },
+    });
+
+    await gate.onBlockReply({ text: "draft pass" });
+    await gate.onBlockReplyFlush();
+    await gate.completePass({ hasFollowUp: true });
+    expect(emitted).toEqual([]);
+
+    await gate.onBlockReply({ text: "final pass" });
+    await gate.onBlockReplyFlush();
+    await gate.completePass({ hasFollowUp: false });
+
+    expect(emitted).toEqual(["final pass", "<flush>"]);
   });
 });
 

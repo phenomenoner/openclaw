@@ -183,6 +183,7 @@ export type PluginHookAfterModelResponseEvent = {
 export type PluginHookAfterModelResponseResult = {
   requestFollowUpPass?: {
     reason?: string;
+    maxPassIndex?: number;
     passInput?: {
       prependContext?: string;
       appendSystemContext?: string;

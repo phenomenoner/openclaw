@@ -84,6 +84,7 @@ import {
   resolveBootstrapPromptTruncationWarningMode,
   resolveBootstrapTotalMaxChars,
 } from "../../pi-embedded-helpers.js";
+import type { BlockReplyPayload } from "../../pi-embedded-payloads.js";
 import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../../pi-project-settings.js";
 import { applyPiAutoCompactionGuard } from "../../pi-settings.js";
@@ -294,11 +295,57 @@ export {
 const MAX_BTW_SNAPSHOT_MESSAGES = 100;
 const MAX_AFTER_MODEL_RESPONSE_PASS_INDEX = 2;
 
+export function createAfterModelResponseReplyGate(params: {
+  enabled: boolean;
+  onBlockReply?: (payload: BlockReplyPayload) => void | Promise<void>;
+  onBlockReplyFlush?: () => void | Promise<void>;
+}) {
+  const bufferedReplies: BlockReplyPayload[] = [];
+  let bufferedFlushRequested = false;
+  let buffering = params.enabled;
+
+  return {
+    onBlockReply(payload: BlockReplyPayload) {
+      if (!buffering || !params.onBlockReply) {
+        return params.onBlockReply?.(payload);
+      }
+      bufferedReplies.push(payload);
+      return undefined;
+    },
+    onBlockReplyFlush() {
+      if (!buffering || !params.onBlockReplyFlush) {
+        return params.onBlockReplyFlush?.();
+      }
+      bufferedFlushRequested = true;
+      return undefined;
+    },
+    async completePass(params: { hasFollowUp: boolean }) {
+      if (!buffering) {
+        return;
+      }
+      if (params.hasFollowUp) {
+        bufferedReplies.length = 0;
+        bufferedFlushRequested = false;
+        return;
+      }
+      buffering = false;
+      for (const payload of bufferedReplies.splice(0)) {
+        await this.onBlockReply(payload);
+      }
+      if (bufferedFlushRequested) {
+        bufferedFlushRequested = false;
+        await this.onBlockReplyFlush();
+      }
+    },
+  };
+}
+
 export function buildAfterModelResponseFollowUpPass(params: {
   baseSystemPrompt?: string;
   passIndex: number;
   maxPassIndex?: number;
   requestFollowUpPass?: {
+    maxPassIndex?: number;
     passInput?: {
       prependContext?: string;
       appendSystemContext?: string;
@@ -310,7 +357,11 @@ export function buildAfterModelResponseFollowUpPass(params: {
       systemPrompt?: string;
     }
   | undefined {
-  const maxPassIndex = params.maxPassIndex ?? MAX_AFTER_MODEL_RESPONSE_PASS_INDEX;
+  const requestedMaxPassIndex = params.requestFollowUpPass?.maxPassIndex;
+  const maxPassIndex =
+    (typeof requestedMaxPassIndex === "number" && Number.isFinite(requestedMaxPassIndex)
+      ? requestedMaxPassIndex
+      : params.maxPassIndex) ?? MAX_AFTER_MODEL_RESPONSE_PASS_INDEX;
   if (params.passIndex >= maxPassIndex) {
     return undefined;
   }
@@ -1606,6 +1657,12 @@ export async function runEmbeddedAttempt(
         });
       };
 
+      const followUpReplyGate = createAfterModelResponseReplyGate({
+        enabled: Boolean(params.onBlockReply && hookRunner?.hasHooks("after_model_response")),
+        onBlockReply: params.onBlockReply,
+        onBlockReplyFlush: params.onBlockReplyFlush,
+      });
+
       const subscription = subscribeEmbeddedPiSession(
         buildEmbeddedSubscriptionParams({
           session: activeSession,
@@ -1620,8 +1677,8 @@ export async function runEmbeddedAttempt(
           onToolResult: params.onToolResult,
           onReasoningStream: params.onReasoningStream,
           onReasoningEnd: params.onReasoningEnd,
-          onBlockReply: params.onBlockReply,
-          onBlockReplyFlush: params.onBlockReplyFlush,
+          onBlockReply: (payload) => followUpReplyGate.onBlockReply(payload),
+          onBlockReplyFlush: () => followUpReplyGate.onBlockReplyFlush(),
           blockReplyBreak: params.blockReplyBreak,
           blockReplyChunking: params.blockReplyChunking,
           onPartialReply: params.onPartialReply,
@@ -2190,6 +2247,7 @@ export async function runEmbeddedAttempt(
                   passIndex,
                   requestFollowUpPass: afterModelResponseResult?.requestFollowUpPass,
                 });
+                await followUpReplyGate.completePass({ hasFollowUp: Boolean(followUpPass) });
                 if (!followUpPass) {
                   break;
                 }
