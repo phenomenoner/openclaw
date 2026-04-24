@@ -270,14 +270,18 @@ export function buildEmbeddedRunPayloads(params: {
     }
     return isRawApiErrorPayload(trimmed);
   };
+  // Only the terminal assistant answer should become a user-visible payload.
+  // Earlier assistantTexts may come from bounded follow-up passes or other
+  // intra-run assistant turns, and surfacing them would leak draft/intermediate
+  // content instead of the final integrated answer.
+  const terminalAssistantTexts = params.assistantTexts.length
+    ? [params.assistantTexts[params.assistantTexts.length - 1] ?? ""]
+    : fallbackAnswerText
+      ? [fallbackAnswerText]
+      : [];
   const answerTexts = suppressAssistantArtifacts
     ? []
-    : (params.assistantTexts.length
-        ? params.assistantTexts
-        : fallbackAnswerText
-          ? [fallbackAnswerText]
-          : []
-      ).filter((text) => !shouldSuppressRawErrorText(text));
+    : terminalAssistantTexts.filter((text) => !shouldSuppressRawErrorText(text));
 
   let hasUserFacingAssistantReply = false;
   for (const text of answerTexts) {

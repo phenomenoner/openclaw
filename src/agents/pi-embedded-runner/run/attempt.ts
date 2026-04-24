@@ -393,6 +393,39 @@ export function buildAfterModelResponseFollowUpPass(params: {
   };
 }
 
+export function isAfterModelResponseFollowUpEligible(params: {
+  trigger?: string;
+  prompt?: string;
+  passIndex: number;
+  assistantTexts?: string[];
+  lastAssistant?: AgentMessage;
+}): boolean {
+  if (params.passIndex !== 1) {
+    return true;
+  }
+  if (
+    typeof params.trigger === "string" &&
+    params.trigger.trim() &&
+    params.trigger !== "user" &&
+    params.trigger !== "manual"
+  ) {
+    return false;
+  }
+  const prompt = typeof params.prompt === "string" ? params.prompt : "";
+  if (/A new session was started via \/new or \/reset/i.test(prompt)) {
+    return false;
+  }
+  const assistantTexts = Array.isArray(params.assistantTexts)
+    ? params.assistantTexts.map((item) => item.trim()).filter(Boolean)
+    : [];
+  const lastAssistantContent = (params.lastAssistant as { content?: unknown } | undefined)?.content;
+  const lastAssistantText =
+    params.lastAssistant?.role === "assistant" && typeof lastAssistantContent === "string"
+      ? lastAssistantContent.trim()
+      : "";
+  return assistantTexts.length > 0 || lastAssistantText.length > 0;
+}
+
 export function resolveUnknownToolGuardThreshold(loopDetection?: {
   enabled?: boolean;
   unknownToolThreshold?: number;
@@ -413,7 +446,10 @@ export function resolveUnknownToolGuardThreshold(loopDetection?: {
   return UNKNOWN_TOOL_THRESHOLD;
 }
 
-function summarizeMessagePayload(msg: AgentMessage): { textChars: number; imageBlocks: number } {
+function summarizeMessagePayload(msg: AgentMessage): {
+  textChars: number;
+  imageBlocks: number;
+} {
   const content = (msg as { content?: unknown }).content;
   if (typeof content === "string") {
     return { textChars: content.length, imageBlocks: 0 };
@@ -564,7 +600,10 @@ export async function runEmbeddedAttempt(
           config: params.config,
           sessionKey: params.sessionKey,
           sessionId: params.sessionId,
-          warn: makeBootstrapWarn({ sessionLabel, warn: (message) => log.warn(message) }),
+          warn: makeBootstrapWarn({
+            sessionLabel,
+            warn: (message) => log.warn(message),
+          }),
           contextMode: params.bootstrapContextMode,
           runKind: params.bootstrapContextRunKind,
         }),
@@ -1074,7 +1113,10 @@ export async function runEmbeddedAttempt(
       });
 
       // Add client tools (OpenResponses hosted tools) to customTools
-      let clientToolCallDetected: { name: string; params: Record<string, unknown> } | null = null;
+      let clientToolCallDetected: {
+        name: string;
+        params: Record<string, unknown>;
+      } | null = null;
       const clientToolLoopDetection = resolveToolLoopDetectionConfig({
         cfg: params.config,
         agentId: sessionAgentId,
@@ -1415,7 +1457,9 @@ export async function runEmbeddedAttempt(
 
       const innerStreamFn = activeSession.agent.streamFn;
       activeSession.agent.streamFn = (model, context, options) => {
-        const signal = runAbortController.signal as AbortSignal & { reason?: unknown };
+        const signal = runAbortController.signal as AbortSignal & {
+          reason?: unknown;
+        };
         if (yieldDetected && signal.aborted && signal.reason === "sessions_yield") {
           return createYieldAbortedResponse(model) as unknown as Awaited<
             ReturnType<typeof innerStreamFn>
@@ -1666,11 +1710,69 @@ export async function runEmbeddedAttempt(
         });
       };
 
-      const followUpReplyGate = createAfterModelResponseReplyGate({
-        enabled: Boolean(params.onBlockReply && hookRunner?.hasHooks("after_model_response")),
-        onBlockReply: params.onBlockReply,
-        onBlockReplyFlush: params.onBlockReplyFlush,
-      });
+      type BufferedReplyEvent =
+        | { type: "assistant_message_start" }
+        | { type: "reasoning_end" }
+        | {
+            type: "block_reply";
+            payload: NonNullable<EmbeddedRunAttemptParams["onBlockReply"]> extends (
+              payload: infer T,
+            ) => unknown
+              ? T
+              : never;
+          }
+        | {
+            type: "partial_reply";
+            payload: NonNullable<EmbeddedRunAttemptParams["onPartialReply"]> extends (
+              payload: infer T,
+            ) => unknown
+              ? T
+              : never;
+          }
+        | {
+            type: "reasoning_stream";
+            payload: NonNullable<EmbeddedRunAttemptParams["onReasoningStream"]> extends (
+              payload: infer T,
+            ) => unknown
+              ? T
+              : never;
+          };
+
+      const shouldGateFollowUpPassReplies = Boolean(hookRunner?.hasHooks("after_model_response"));
+      let bufferedPassReplyEvents: BufferedReplyEvent[] | null = null;
+      const bufferPassReplyEvent = (event: BufferedReplyEvent) => {
+        bufferedPassReplyEvents ??= [];
+        bufferedPassReplyEvents.push(event);
+      };
+      const flushBufferedPassReplyEvents = async () => {
+        const events = bufferedPassReplyEvents;
+        bufferedPassReplyEvents = null;
+        if (!events?.length) {
+          return;
+        }
+        for (const event of events) {
+          switch (event.type) {
+            case "assistant_message_start":
+              await params.onAssistantMessageStart?.();
+              break;
+            case "reasoning_end":
+              await params.onReasoningEnd?.();
+              break;
+            case "block_reply":
+              await params.onBlockReply?.(event.payload);
+              break;
+            case "partial_reply":
+              await params.onPartialReply?.(event.payload);
+              break;
+            case "reasoning_stream":
+              await params.onReasoningStream?.(event.payload);
+              break;
+          }
+        }
+      };
+      const discardBufferedPassReplyEvents = () => {
+        bufferedPassReplyEvents = null;
+      };
 
       const subscription = subscribeEmbeddedPiSession(
         buildEmbeddedSubscriptionParams({
@@ -1684,14 +1786,74 @@ export async function runEmbeddedAttempt(
           shouldEmitToolResult: params.shouldEmitToolResult,
           shouldEmitToolOutput: params.shouldEmitToolOutput,
           onToolResult: params.onToolResult,
-          onReasoningStream: params.onReasoningStream,
-          onReasoningEnd: params.onReasoningEnd,
-          onBlockReply: (payload) => followUpReplyGate.onBlockReply(payload),
-          onBlockReplyFlush: () => followUpReplyGate.onBlockReplyFlush(),
+
+          onReasoningStream: params.onReasoningStream
+            ? async (payload) => {
+                if (!shouldGateFollowUpPassReplies) {
+                  await params.onReasoningStream?.(payload);
+                  return;
+                }
+                bufferPassReplyEvent({
+                  type: "reasoning_stream",
+                  payload: {
+                    ...(payload.text !== undefined ? { text: payload.text } : {}),
+                    ...(payload.mediaUrls ? { mediaUrls: [...payload.mediaUrls] } : {}),
+                  },
+                });
+              }
+            : undefined,
+          onReasoningEnd: params.onReasoningEnd
+            ? async () => {
+                if (!shouldGateFollowUpPassReplies) {
+                  await params.onReasoningEnd?.();
+                  return;
+                }
+                bufferPassReplyEvent({ type: "reasoning_end" });
+              }
+            : undefined,
+          onBlockReply: params.onBlockReply
+            ? async (payload) => {
+                if (!shouldGateFollowUpPassReplies) {
+                  await params.onBlockReply?.(payload);
+                  return;
+                }
+                bufferPassReplyEvent({
+                  type: "block_reply",
+                  payload: {
+                    ...payload,
+                    ...(payload.mediaUrls ? { mediaUrls: [...payload.mediaUrls] } : {}),
+                  },
+                });
+              }
+            : undefined,
+          onBlockReplyFlush: params.onBlockReplyFlush,
+
           blockReplyBreak: params.blockReplyBreak,
           blockReplyChunking: params.blockReplyChunking,
-          onPartialReply: params.onPartialReply,
-          onAssistantMessageStart: params.onAssistantMessageStart,
+          onPartialReply: params.onPartialReply
+            ? async (payload) => {
+                if (!shouldGateFollowUpPassReplies) {
+                  await params.onPartialReply?.(payload);
+                  return;
+                }
+                bufferPassReplyEvent({
+                  type: "partial_reply",
+                  payload: {
+                    ...(payload.text !== undefined ? { text: payload.text } : {}),
+                    ...(payload.mediaUrls ? { mediaUrls: [...payload.mediaUrls] } : {}),
+                  },
+                });
+              }
+            : undefined,
+          onAssistantMessageStart: params.onAssistantMessageStart
+            ? async () => {
+                if (!shouldGateFollowUpPassReplies) {
+                  await params.onAssistantMessageStart?.();
+                  return;
+                }
+                bufferPassReplyEvent({ type: "assistant_message_start" });
+              }
+            : undefined,
           onAgentEvent: params.onAgentEvent,
           enforceFinalTag: params.enforceFinalTag,
           silentExpected: params.silentExpected,
@@ -1722,6 +1884,67 @@ export async function runEmbeddedAttempt(
         getUsageTotals,
         getCompactionCount,
       } = subscription;
+
+      const discardPassAssistantOutput = (params2: {
+        assistantTextBaseline: number;
+        messageCountBaseline: number;
+        transcriptLeafIdBeforePass: string | null;
+      }) => {
+        if (assistantTexts.length > params2.assistantTextBaseline) {
+          assistantTexts.splice(params2.assistantTextBaseline);
+        }
+        const manager = sessionManager;
+        const leafEntry = manager?.getLeafEntry();
+        if (manager && leafEntry?.type === "message") {
+          if (params2.transcriptLeafIdBeforePass) {
+            manager.branch(params2.transcriptLeafIdBeforePass);
+          } else {
+            manager.resetLeaf();
+          }
+          const sessionContext = manager.buildSessionContext();
+          activeSession.agent.state.messages = sessionContext.messages;
+          return;
+        }
+        activeSession.agent.state.messages = activeSession.messages.slice(
+          0,
+          params2.messageCountBaseline,
+        );
+      };
+
+      const replaceSyntheticFollowUpPromptWithFinalAssistant = (params2: {
+        messageCountBaseline: number;
+        transcriptLeafIdBeforePass: string | null;
+        finalAssistant: (typeof activeSession.messages)[number] | undefined;
+      }) => {
+        if (!params2.finalAssistant || params2.finalAssistant.role !== "assistant") {
+          return;
+        }
+        const manager = sessionManager;
+        if (!manager) {
+          activeSession.agent.state.messages = [
+            ...activeSession.messages.slice(0, params2.messageCountBaseline),
+            params2.finalAssistant,
+          ];
+          return;
+        }
+        if (params2.transcriptLeafIdBeforePass) {
+          manager.branch(params2.transcriptLeafIdBeforePass);
+        } else {
+          manager.resetLeaf();
+        }
+        const appendMessage = (manager as { appendMessage?: (message: unknown) => unknown })
+          .appendMessage;
+        if (typeof appendMessage === "function") {
+          appendMessage.call(manager, params2.finalAssistant);
+          const sessionContext = manager.buildSessionContext();
+          activeSession.agent.state.messages = sessionContext.messages;
+          return;
+        }
+        activeSession.agent.state.messages = [
+          ...activeSession.messages.slice(0, params2.messageCountBaseline),
+          params2.finalAssistant,
+        ];
+      };
 
       const queueHandle: EmbeddedPiQueueHandle & {
         kind: "embedded";
@@ -2194,6 +2417,11 @@ export async function runEmbeddedAttempt(
             try {
               for (;;) {
                 finalPromptText = nextPrompt;
+                const passAssistantTextBaseline = assistantTexts.length;
+                const passMessageCountBaseline = activeSession.messages.length;
+                const passTranscriptLeafIdBeforePass =
+                  (sessionManager.getLeafEntry() as { id?: string } | null | undefined)?.id ?? null;
+                discardBufferedPassReplyEvents();
                 const btwSnapshotMessages =
                   activeSession.messages.slice(-MAX_BTW_SNAPSHOT_MESSAGES);
                 updateActiveEmbeddedRunSnapshot(params.sessionId, {
@@ -2202,73 +2430,121 @@ export async function runEmbeddedAttempt(
                   inFlightPrompt: nextPrompt,
                 });
 
-                if (nextPromptImages.length > 0) {
-                  await abortable(activeSession.prompt(nextPrompt, { images: nextPromptImages }));
-                } else {
-                  await abortable(activeSession.prompt(nextPrompt));
-                }
+                try {
+                  if (nextPromptImages.length > 0) {
+                    await abortable(
+                      activeSession.prompt(nextPrompt, {
+                        images: nextPromptImages,
+                      }),
+                    );
+                  } else {
+                    await abortable(activeSession.prompt(nextPrompt));
+                  }
 
-                if (!hookRunner?.hasHooks("after_model_response")) {
-                  break;
-                }
+                  if (!hookRunner?.hasHooks("after_model_response")) {
+                    await flushBufferedPassReplyEvents();
+                    break;
+                  }
 
-                const passMessagesSnapshot = activeSession.messages.slice();
-                const passLastAssistant = passMessagesSnapshot
-                  .slice()
-                  .toReversed()
-                  .find((message) => message.role === "assistant");
-                const passAssistantTexts = assistantTexts.length
-                  ? assistantTexts
-                  : typeof passLastAssistant?.content === "string"
-                    ? [passLastAssistant.content]
-                    : [];
+                  const passMessagesSnapshot = activeSession.messages.slice();
+                  const passLastAssistant = passMessagesSnapshot
+                    .slice()
+                    .toReversed()
+                    .find((message) => message.role === "assistant");
+                  const passAssistantTexts =
+                    assistantTexts.length > passAssistantTextBaseline
+                      ? assistantTexts.slice(passAssistantTextBaseline)
+                      : typeof passLastAssistant?.content === "string"
+                        ? [passLastAssistant.content]
+                        : [];
 
-                const afterModelResponseResult = await hookRunner
-                  .runAfterModelResponse(
-                    {
-                      runId: params.runId,
-                      sessionId: params.sessionId,
-                      provider: params.provider,
-                      model: params.modelId,
+                  if (
+                    !isAfterModelResponseFollowUpEligible({
+                      trigger: params.trigger,
+                      prompt: params.prompt,
                       passIndex,
                       assistantTexts: passAssistantTexts,
                       lastAssistant: passLastAssistant,
-                      usage: getUsageTotals(),
-                    },
-                    {
-                      runId: params.runId,
-                      agentId: hookAgentId,
-                      sessionKey: params.sessionKey,
-                      sessionId: params.sessionId,
-                      workspaceDir: params.workspaceDir,
-                      messageProvider: params.messageProvider ?? undefined,
-                      trigger: params.trigger,
-                      channelId: params.messageChannel ?? params.messageProvider ?? undefined,
-                    },
-                  )
-                  .catch((err) => {
-                    log.warn(`after_model_response hook failed: ${String(err)}`);
-                    return undefined;
+                    })
+                  ) {
+                    await flushBufferedPassReplyEvents();
+                    break;
+                  }
+
+                  const afterModelResponseResult = await hookRunner
+                    .runAfterModelResponse(
+                      {
+                        runId: params.runId,
+                        sessionId: params.sessionId,
+                        provider: params.provider,
+                        model: params.modelId,
+                        passIndex,
+                        assistantTexts: passAssistantTexts,
+                        lastAssistant: passLastAssistant,
+                        usage: getUsageTotals(),
+                      },
+                      {
+                        runId: params.runId,
+                        agentId: hookAgentId,
+                        sessionKey: params.sessionKey,
+                        sessionId: params.sessionId,
+                        workspaceDir: params.workspaceDir,
+                        messageProvider: params.messageProvider ?? undefined,
+                        trigger: params.trigger,
+                        channelId: params.messageChannel ?? params.messageProvider ?? undefined,
+                      },
+                    )
+                    .catch((err) => {
+                      log.warn(`after_model_response hook failed: ${String(err)}`);
+                      return undefined;
+                    });
+
+                  const followUpPass = buildAfterModelResponseFollowUpPass({
+                    baseSystemPrompt: baseSystemPromptText,
+                    passIndex,
+                    maxPassIndex: afterModelResponseResult?.requestFollowUpPass?.maxPassIndex,
+                    requestFollowUpPass: afterModelResponseResult?.requestFollowUpPass,
+                  });
+                  if (!followUpPass) {
+                    if (passIndex > 1) {
+                      replaceSyntheticFollowUpPromptWithFinalAssistant({
+                        messageCountBaseline: passMessageCountBaseline,
+                        transcriptLeafIdBeforePass: passTranscriptLeafIdBeforePass,
+                        finalAssistant: passLastAssistant,
+                      });
+                    }
+                    await flushBufferedPassReplyEvents();
+                    break;
+                  }
+
+                  discardBufferedPassReplyEvents();
+                  discardPassAssistantOutput({
+                    assistantTextBaseline: passAssistantTextBaseline,
+                    messageCountBaseline: passMessageCountBaseline,
+                    transcriptLeafIdBeforePass: passTranscriptLeafIdBeforePass,
                   });
 
-                const followUpPass = buildAfterModelResponseFollowUpPass({
-                  baseSystemPrompt: baseSystemPromptText,
-                  passIndex,
-                  requestFollowUpPass: afterModelResponseResult?.requestFollowUpPass,
-                });
-                await followUpReplyGate.completePass({ hasFollowUp: Boolean(followUpPass) });
-                if (!followUpPass) {
-                  break;
+                  if (followUpPass.systemPrompt) {
+                    applySystemPromptOverrideToSession(activeSession, followUpPass.systemPrompt);
+                    systemPromptText = followUpPass.systemPrompt;
+                    followUpSystemPromptApplied = true;
+                  }
+                  passIndex += 1;
+                  nextPrompt = followUpPass.prompt;
+                  nextPromptImages = [];
+                } catch (err) {
+                  const sessionsYieldAbort =
+                    yieldDetected &&
+                    isRunnerAbortError(err) &&
+                    err instanceof Error &&
+                    err.cause === "sessions_yield";
+                  if (sessionsYieldAbort) {
+                    discardBufferedPassReplyEvents();
+                  } else {
+                    await flushBufferedPassReplyEvents();
+                  }
+                  throw err;
                 }
-
-                if (followUpPass.systemPrompt) {
-                  applySystemPromptOverrideToSession(activeSession, followUpPass.systemPrompt);
-                  systemPromptText = followUpPass.systemPrompt;
-                  followUpSystemPromptApplied = true;
-                }
-                passIndex += 1;
-                nextPrompt = followUpPass.prompt;
-                nextPromptImages = [];
               }
             } finally {
               if (followUpSystemPromptApplied) {

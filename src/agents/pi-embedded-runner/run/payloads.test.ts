@@ -65,6 +65,14 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
     expectSinglePayloadText(payloads, "Done.");
   });
 
+  it("keeps only the terminal assistant text when multiple assistant passes were recorded", () => {
+    const payloads = buildPayloads({
+      assistantTexts: ["PASS1 draft", "PASS2 final"],
+    });
+
+    expectSinglePayloadText(payloads, "PASS2 final");
+  });
+
   it("suppresses exec tool errors when verbose mode is off", () => {
     expectNoPayloads({
       lastToolError: { toolName: "exec", error: "command failed" },

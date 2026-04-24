@@ -66,6 +66,7 @@ type AttemptSpawnWorkspaceHoisted = {
   hasCompletedBootstrapTurnMock: Mock<() => Promise<boolean>>;
   getGlobalHookRunnerMock: Mock<() => unknown>;
   initializeGlobalHookRunnerMock: UnknownMock;
+  applySystemPromptOverrideToSessionMock: UnknownMock;
   runContextEngineMaintenanceMock: AsyncUnknownMock;
   getDmHistoryLimitFromSessionKeyMock: Mock<
     (sessionKey: string | undefined, config: unknown) => number | undefined
@@ -106,7 +107,11 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
         getLastToolError: () => undefined,
         getUsageTotals: () => undefined,
         getCompactionCount: () => 0,
-        getItemLifecycle: () => ({ startedCount: 0, completedCount: 0, activeCount: 0 }),
+        getItemLifecycle: () => ({
+          startedCount: 0,
+          completedCount: 0,
+          activeCount: 0,
+        }),
         isCompacting: () => false,
         isCompactionInFlight: () => false,
       }) satisfies SubscriptionMock,
@@ -124,6 +129,13 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
   const hasCompletedBootstrapTurnMock = vi.fn<() => Promise<boolean>>(async () => false);
   const getGlobalHookRunnerMock = vi.fn<() => unknown>(() => undefined);
   const initializeGlobalHookRunnerMock = vi.fn();
+  const applySystemPromptOverrideToSessionMock = vi.fn(
+    (session: { agent?: { state?: { systemPrompt?: string } } } | undefined, prompt: unknown) => {
+      if (session?.agent?.state && typeof prompt === "string") {
+        session.agent.state.systemPrompt = prompt;
+      }
+    },
+  );
   const runContextEngineMaintenanceMock = vi.fn(async (_params?: unknown) => undefined);
   const getDmHistoryLimitFromSessionKeyMock = vi.fn<
     (sessionKey: string | undefined, config: unknown) => number | undefined
@@ -135,7 +147,9 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
     getLeafEntry: vi.fn(() => null),
     branch: vi.fn(),
     resetLeaf: vi.fn(),
-    buildSessionContext: vi.fn<() => { messages: AgentMessage[] }>(() => ({ messages: [] })),
+    buildSessionContext: vi.fn<() => { messages: AgentMessage[] }>(() => ({
+      messages: [],
+    })),
     appendCustomEntry: vi.fn(),
     flushPendingToolResults: vi.fn(),
     clearPendingToolResults: vi.fn(),
@@ -158,6 +172,7 @@ const hoisted = vi.hoisted((): AttemptSpawnWorkspaceHoisted => {
     hasCompletedBootstrapTurnMock,
     getGlobalHookRunnerMock,
     initializeGlobalHookRunnerMock,
+    applySystemPromptOverrideToSessionMock,
     runContextEngineMaintenanceMock,
     getDmHistoryLimitFromSessionKeyMock,
     limitHistoryTurnsMock,
@@ -349,7 +364,8 @@ vi.mock("../../system-prompt-report.js", () => ({
 }));
 
 vi.mock("../system-prompt.js", () => ({
-  applySystemPromptOverrideToSession: () => {},
+  applySystemPromptOverrideToSession: (...args: unknown[]) =>
+    hoisted.applySystemPromptOverrideToSessionMock(...args),
   buildEmbeddedSystemPrompt: () => "system prompt",
   createSystemPromptOverride: (prompt: string) => () => prompt,
 }));
@@ -430,7 +446,10 @@ vi.mock("../../model-selection.js", () => ({
     return undefined;
   },
   normalizeProviderId: normalizeMockProviderId,
-  resolveDefaultModelForAgent: () => ({ provider: "openai", model: "gpt-test" }),
+  resolveDefaultModelForAgent: () => ({
+    provider: "openai",
+    model: "gpt-test",
+  }),
 }));
 
 vi.mock("../../anthropic-vertex-stream.js", () => ({
@@ -467,7 +486,11 @@ vi.mock("../../sandbox/runtime-status.js", () => ({
     mainSessionKey: "agent:main:main",
     mode: "off",
     sandboxed: false,
-    toolPolicy: { allow: [], deny: [], sources: { allow: { key: "" }, deny: { key: "" } } },
+    toolPolicy: {
+      allow: [],
+      deny: [],
+      sources: { allow: { key: "" }, deny: { key: "" } },
+    },
   }),
 }));
 
@@ -491,7 +514,9 @@ vi.mock("../../transcript-policy.js", () => ({
 
 vi.mock("../cache-ttl.js", () => ({
   appendCacheTtlTimestamp: (
-    sessionManager: { appendCustomEntry?: (customType: string, data: unknown) => void },
+    sessionManager: {
+      appendCustomEntry?: (customType: string, data: unknown) => void;
+    },
     data: unknown,
   ) => sessionManager.appendCustomEntry?.("openclaw.cache-ttl", data),
   isCacheTtlEligibleProvider: (provider?: string) => provider === "anthropic",
@@ -666,7 +691,11 @@ export function createSubscriptionMock(): SubscriptionMock {
     getLastToolError: () => undefined,
     getUsageTotals: () => undefined,
     getCompactionCount: () => 0,
-    getItemLifecycle: () => ({ startedCount: 0, completedCount: 0, activeCount: 0 }),
+    getItemLifecycle: () => ({
+      startedCount: 0,
+      completedCount: 0,
+      activeCount: 0,
+    }),
     isCompacting: () => false,
     isCompactionInFlight: () => false,
   };
@@ -730,6 +759,15 @@ export function resetEmbeddedAttemptHarness(
   hoisted.resolveContextInjectionModeMock.mockReset().mockReturnValue("always");
   hoisted.hasCompletedBootstrapTurnMock.mockReset().mockResolvedValue(false);
   hoisted.getGlobalHookRunnerMock.mockReset().mockReturnValue(undefined);
+  hoisted.applySystemPromptOverrideToSessionMock
+    .mockReset()
+    .mockImplementation(
+      (session: { agent?: { state?: { systemPrompt?: string } } } | undefined, prompt: unknown) => {
+        if (session?.agent?.state && typeof prompt === "string") {
+          session.agent.state.systemPrompt = prompt;
+        }
+      },
+    );
   hoisted.runContextEngineMaintenanceMock.mockReset().mockResolvedValue(undefined);
   hoisted.getDmHistoryLimitFromSessionKeyMock.mockReset().mockReturnValue(undefined);
   hoisted.limitHistoryTurnsMock.mockReset().mockImplementation((messages) => messages);
@@ -797,7 +835,9 @@ export function createDefaultEmbeddedSession(params?: {
 
 export function createContextEngineBootstrapAndAssemble() {
   return {
-    bootstrap: vi.fn(async (_params: { sessionKey?: string }) => ({ bootstrapped: true })),
+    bootstrap: vi.fn(async (_params: { sessionKey?: string }) => ({
+      bootstrapped: true,
+    })),
     assemble: vi.fn(
       async ({ messages }: { messages: AgentMessage[]; sessionKey?: string; model?: string }) => ({
         messages,
