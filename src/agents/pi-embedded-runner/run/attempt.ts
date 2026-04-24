@@ -86,6 +86,7 @@ import {
 } from "../../pi-embedded-helpers.js";
 import type { BlockReplyPayload } from "../../pi-embedded-payloads.js";
 import { subscribeEmbeddedPiSession } from "../../pi-embedded-subscribe.js";
+import { isPromiseLike } from "../../pi-embedded-subscribe.promise.js";
 import { createPreparedEmbeddedPiSettingsManager } from "../../pi-project-settings.js";
 import { applyPiAutoCompactionGuard } from "../../pi-settings.js";
 import {
@@ -303,11 +304,17 @@ export function createAfterModelResponseReplyGate(params: {
   const bufferedReplies: BlockReplyPayload[] = [];
   let bufferedFlushRequested = false;
   let buffering = params.enabled;
+  let flushAfterReleasedReply = false;
 
   return {
     onBlockReply(payload: BlockReplyPayload) {
       if (!buffering || !params.onBlockReply) {
-        return params.onBlockReply?.(payload);
+        const maybeReply = params.onBlockReply?.(payload);
+        if (!flushAfterReleasedReply || !params.onBlockReplyFlush) {
+          return maybeReply;
+        }
+        const flush = () => params.onBlockReplyFlush?.();
+        return isPromiseLike(maybeReply) ? Promise.resolve(maybeReply).then(flush) : flush();
       }
       bufferedReplies.push(payload);
       return undefined;
@@ -329,13 +336,15 @@ export function createAfterModelResponseReplyGate(params: {
         return;
       }
       buffering = false;
+      const shouldFlushAfterDrain = bufferedFlushRequested || bufferedReplies.length > 0;
       for (const payload of bufferedReplies.splice(0)) {
         await this.onBlockReply(payload);
       }
-      if (bufferedFlushRequested) {
-        bufferedFlushRequested = false;
+      if (shouldFlushAfterDrain) {
         await this.onBlockReplyFlush();
       }
+      bufferedFlushRequested = false;
+      flushAfterReleasedReply = true;
     },
   };
 }

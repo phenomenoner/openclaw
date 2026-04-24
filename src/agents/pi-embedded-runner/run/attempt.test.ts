@@ -291,6 +291,42 @@ describe("createAfterModelResponseReplyGate", () => {
 
     expect(emitted).toEqual(["final pass", "<flush>"]);
   });
+
+  it("flushes a final buffered reply even when the stream did not request a flush", async () => {
+    const emitted: string[] = [];
+    const gate = createAfterModelResponseReplyGate({
+      enabled: true,
+      onBlockReply: async (payload) => {
+        emitted.push(payload.text ?? "");
+      },
+      onBlockReplyFlush: async () => {
+        emitted.push("<flush>");
+      },
+    });
+
+    await gate.onBlockReply({ text: "final pass" });
+    await gate.completePass({ hasFollowUp: false });
+
+    expect(emitted).toEqual(["final pass", "<flush>"]);
+  });
+
+  it("flushes late final replies that arrive after the gate is released", async () => {
+    const emitted: string[] = [];
+    const gate = createAfterModelResponseReplyGate({
+      enabled: true,
+      onBlockReply: async (payload) => {
+        emitted.push(payload.text ?? "");
+      },
+      onBlockReplyFlush: async () => {
+        emitted.push("<flush>");
+      },
+    });
+
+    await gate.completePass({ hasFollowUp: false });
+    await gate.onBlockReply({ text: "late final pass" });
+
+    expect(emitted).toEqual(["late final pass", "<flush>"]);
+  });
 });
 
 describe("resolvePromptModeForSession", () => {
