@@ -44,6 +44,7 @@ import type { SpawnSubagentMode } from "./subagent-spawn.types.js";
 export { resolveAnnounceOrigin } from "./subagent-announce-origin.js";
 
 const DEFAULT_SUBAGENT_ANNOUNCE_TIMEOUT_MS = 120_000;
+const DEFAULT_SUBAGENT_COMPLETION_ANNOUNCE_TIMEOUT_MS = 30_000;
 const MAX_TIMER_SAFE_TIMEOUT_MS = 2_147_000_000;
 
 type SubagentAnnounceDeliveryDeps = {
@@ -71,6 +72,13 @@ export function resolveSubagentAnnounceTimeoutMs(cfg: OpenClawConfig): number {
     return DEFAULT_SUBAGENT_ANNOUNCE_TIMEOUT_MS;
   }
   return Math.min(Math.max(1, Math.floor(configured)), MAX_TIMER_SAFE_TIMEOUT_MS);
+}
+
+export function resolveSubagentCompletionAnnounceTimeoutMs(cfg: OpenClawConfig): number {
+  return Math.min(
+    resolveSubagentAnnounceTimeoutMs(cfg),
+    DEFAULT_SUBAGENT_COMPLETION_ANNOUNCE_TIMEOUT_MS,
+  );
 }
 
 export function isInternalAnnounceRequesterSession(sessionKey: string | undefined): boolean {
@@ -156,9 +164,10 @@ async function waitForAnnounceRetryDelay(ms: number, signal?: AbortSignal): Prom
 export async function runAnnounceDeliveryWithRetry<T>(params: {
   operation: string;
   signal?: AbortSignal;
+  retryDelaysMs?: readonly number[];
   run: () => Promise<T>;
 }): Promise<T> {
-  const retryDelaysMs = resolveDirectAnnounceTransientRetryDelaysMs();
+  const retryDelaysMs = params.retryDelaysMs ?? resolveDirectAnnounceTransientRetryDelaysMs();
   let retryIndex = 0;
   for (;;) {
     if (params.signal?.aborted) {
@@ -421,7 +430,11 @@ async function sendSubagentAnnounceDirectly(params: {
     };
   }
   const cfg = subagentAnnounceDeliveryDeps.loadConfig();
-  const announceTimeoutMs = resolveSubagentAnnounceTimeoutMs(cfg);
+  const announceTimeoutMs = params.expectsCompletionMessage
+    ? resolveSubagentCompletionAnnounceTimeoutMs(cfg)
+    : resolveSubagentAnnounceTimeoutMs(cfg);
+  const completionRetryDelaysMs =
+    process.env.OPENCLAW_TEST_FAST === "1" ? ([8] as const) : ([5_000] as const);
   const canonicalRequesterSessionKey = resolveRequesterStoreKey(
     cfg,
     params.targetRequesterSessionKey,
@@ -468,6 +481,7 @@ async function sendSubagentAnnounceDirectly(params: {
         ? "completion direct announce agent call"
         : "direct announce agent call",
       signal: params.signal,
+      retryDelaysMs: params.expectsCompletionMessage ? completionRetryDelaysMs : undefined,
       run: async () =>
         await subagentAnnounceDeliveryDeps.callGateway({
           method: "agent",

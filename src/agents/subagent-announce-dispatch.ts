@@ -85,22 +85,17 @@ export async function runSubagentAnnounceDispatch(params: {
     return withPhases(primaryDirect);
   }
 
+  const primaryQueueOutcome = await params.queue();
+  const primaryQueue = mapQueueOutcomeToDeliveryResult(primaryQueueOutcome);
+  appendPhase("queue-primary", primaryQueue);
+  if (primaryQueue.delivered) {
+    return withPhases(primaryQueue);
+  }
+  if (primaryQueueOutcome === "dropped") {
+    return withPhases(primaryQueue);
+  }
+
   const primaryDirect = await params.direct();
   appendPhase("direct-primary", primaryDirect);
-  if (primaryDirect.delivered) {
-    return withPhases(primaryDirect);
-  }
-
-  if (params.signal?.aborted) {
-    return withPhases(primaryDirect);
-  }
-
-  const fallbackQueueOutcome = await params.queue();
-  const fallbackQueue = mapQueueOutcomeToDeliveryResult(fallbackQueueOutcome);
-  appendPhase("queue-fallback", fallbackQueue);
-  if (fallbackQueue.delivered) {
-    return withPhases(fallbackQueue);
-  }
-
   return withPhases(primaryDirect);
 }
