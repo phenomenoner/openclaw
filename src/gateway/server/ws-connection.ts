@@ -12,7 +12,7 @@ import { isWebchatClient } from "../../utils/message-channel.js";
 import type { AuthRateLimiter } from "../auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "../auth.js";
 import { getPreauthHandshakeTimeoutMsFromEnv } from "../handshake-timeouts.js";
-import { isLoopbackAddress } from "../net.js";
+import { isLoopbackAddress, isPrivateOrLoopbackAddress } from "../net.js";
 import { MAX_PAYLOAD_BYTES, MAX_PREAUTH_PAYLOAD_BYTES } from "../server-constants.js";
 import { clearNodeWakeState } from "../server-methods/nodes.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../server-methods/types.js";
@@ -114,6 +114,35 @@ function isWsPayloadLimitError(err: unknown): boolean {
   }
   const message = (err as { message?: unknown }).message;
   return typeof message === "string" && /max payload size exceeded/i.test(message);
+}
+
+type PreauthCloseLogClassification = {
+  code: number;
+  reason?: string;
+  remoteAddr?: string;
+  handshakeState: "pending" | "connected" | "failed";
+  closeCause?: string;
+  lastFrameMethod?: string;
+};
+
+function isBenignLocalPreauthStartupClose(params: PreauthCloseLogClassification): boolean {
+  if (!isPrivateOrLoopbackAddress(params.remoteAddr)) {
+    return false;
+  }
+  if (
+    params.closeCause === "handshake-timeout" &&
+    params.handshakeState === "failed" &&
+    !params.lastFrameMethod
+  ) {
+    return true;
+  }
+  return (
+    params.code === 1000 &&
+    !params.reason &&
+    params.handshakeState === "pending" &&
+    params.lastFrameMethod === "connect" &&
+    !params.closeCause
+  );
 }
 
 export type GatewayWsSharedHandlerParams = {
@@ -321,9 +350,18 @@ export function attachGatewayWsConnectionHandler(params: AttachGatewayWsConnecti
         ...closeMeta,
       };
       if (!client) {
-        const logFn = isNoisySwiftPmHelperClose(requestUserAgent, remoteAddr)
-          ? logWsControl.debug
-          : logWsControl.warn;
+        const logFn =
+          isNoisySwiftPmHelperClose(requestUserAgent, remoteAddr) ||
+          isBenignLocalPreauthStartupClose({
+            code,
+            reason: logReason,
+            remoteAddr,
+            handshakeState,
+            closeCause,
+            lastFrameMethod,
+          })
+            ? logWsControl.debug
+            : logWsControl.warn;
         logFn(
           `closed before connect conn=${connId} peer=${endpoint ?? "n/a"} remote=${remoteAddr ?? "?"} fwd=${logForwardedFor || "n/a"} origin=${logOrigin || "n/a"} host=${logHost || "n/a"} ua=${logUserAgent || "n/a"} code=${code ?? "n/a"} reason=${logReason || "n/a"}`,
           closeContext,
@@ -371,7 +409,11 @@ export function attachGatewayWsConnectionHandler(params: AttachGatewayWsConnecti
           handshakeMs: Date.now() - openedAt,
           endpoint,
         });
-        logWsControl.warn(
+        const logFn =
+          isPrivateOrLoopbackAddress(remoteAddr) && !lastFrameMethod
+            ? logWsControl.debug
+            : logWsControl.warn;
+        logFn(
           `handshake timeout conn=${connId} peer=${endpoint ?? "n/a"} remote=${remoteAddr ?? "?"}`,
         );
         close();

@@ -15,6 +15,11 @@ import {
 
 type ApprovalBootstrapHandler = ChannelApprovalHandler;
 const APPROVAL_HANDLER_BOOTSTRAP_RETRY_MS = 1_000;
+const RETRYABLE_GATEWAY_STARTUP_CLOSE_REGEX = /gateway closed(?:\s*\(|:\s*)1000\b/i;
+
+function isRetryableGatewayStartupClose(error: unknown): boolean {
+  return RETRYABLE_GATEWAY_STARTUP_CLOSE_REGEX.test(String(error));
+}
 
 export async function startChannelApprovalHandlerBootstrap(params: {
   plugin: Pick<ChannelPlugin, "id" | "meta" | "approvalCapability">;
@@ -117,7 +122,8 @@ export async function startChannelApprovalHandlerBootstrap(params: {
       await startHandlerForContext(context, generation);
     } catch (error) {
       if (generation === activeGeneration) {
-        logger.error(`failed to start native approval handler: ${String(error)}`);
+        const logFn = isRetryableGatewayStartupClose(error) ? logger.debug : logger.error;
+        logFn(`failed to start native approval handler: ${String(error)}`);
         scheduleRetryForContext(context, generation);
       }
     }

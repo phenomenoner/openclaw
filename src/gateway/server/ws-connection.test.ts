@@ -100,4 +100,114 @@ describe("attachGatewayWsConnectionHandler", () => {
       resolveSharedGatewaySessionGeneration(currentAuth),
     );
   });
+  function attachTestConnection(remoteAddr = "127.0.0.1") {
+    const listeners = new Map<string, (...args: unknown[]) => void>();
+    const wss = {
+      on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+        listeners.set(event, handler);
+      }),
+    } as unknown as WebSocketServer;
+    const socket = Object.assign(new EventEmitter(), {
+      _socket: {
+        remoteAddress: remoteAddr,
+        remotePort: 1234,
+        localAddress: "127.0.0.1",
+        localPort: 5678,
+      },
+      send: vi.fn(),
+      close: vi.fn(),
+    });
+    const upgradeReq = {
+      headers: { host: "127.0.0.1:19001" },
+      socket: { localAddress: "127.0.0.1" },
+    };
+    const logWsControl = createLogger();
+
+    attachGatewayWsConnectionHandler({
+      wss,
+      clients: new Set(),
+      preauthConnectionBudget: { release: vi.fn() } as never,
+      port: 19001,
+      canvasHostEnabled: false,
+      resolvedAuth: createResolvedAuth("token"),
+      gatewayMethods: [],
+      events: [],
+      logGateway: createLogger() as never,
+      logHealth: createLogger() as never,
+      logWsControl: logWsControl as never,
+      extraHandlers: {},
+      broadcast: vi.fn(),
+      buildRequestContext: () =>
+        ({
+          unsubscribeAllSessionEvents: vi.fn(),
+          nodeRegistry: { unregister: vi.fn() },
+          nodeUnsubscribeAll: vi.fn(),
+        }) as never,
+    });
+
+    const onConnection = listeners.get("connection");
+    expect(onConnection).toBeTypeOf("function");
+    onConnection?.(socket, upgradeReq);
+    const handlerParams = attachGatewayWsMessageHandlerMock.mock.calls.at(-1)?.[0] as {
+      setCloseCause: (cause: string, meta?: Record<string, unknown>) => void;
+      setHandshakeState: (state: "pending" | "connected" | "failed") => void;
+      setLastFrameMeta: (meta: { type?: string; method?: string; id?: string }) => void;
+    };
+    return { socket, logWsControl, handlerParams };
+  }
+
+  it("downgrades benign local preauth code-1000 connect closes to debug", () => {
+    const { socket, logWsControl, handlerParams } = attachTestConnection("127.0.0.1");
+
+    handlerParams.setLastFrameMeta({ type: "req", method: "connect", id: "abc" });
+    socket.emit("close", 1000, Buffer.from(""));
+
+    expect(logWsControl.debug).toHaveBeenCalledWith(
+      expect.stringContaining("closed before connect"),
+      expect.objectContaining({ lastFrameMethod: "connect", remoteAddr: "127.0.0.1" }),
+    );
+    expect(logWsControl.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("closed before connect"),
+      expect.anything(),
+    );
+  });
+
+  it("keeps invalid preauth closes at warn", () => {
+    const { socket, logWsControl, handlerParams } = attachTestConnection("127.0.0.1");
+
+    handlerParams.setLastFrameMeta({ type: "req", method: "connect", id: "abc" });
+    handlerParams.setHandshakeState("failed");
+    handlerParams.setCloseCause("invalid-handshake");
+    socket.emit("close", 1008, Buffer.from("invalid handshake"));
+
+    expect(logWsControl.warn).toHaveBeenCalledWith(
+      expect.stringContaining("closed before connect"),
+      expect.objectContaining({ cause: "invalid-handshake" }),
+    );
+  });
+
+  it("keeps non-local preauth code-1000 connect closes at warn", () => {
+    const { socket, logWsControl, handlerParams } = attachTestConnection("8.8.8.8");
+
+    handlerParams.setLastFrameMeta({ type: "req", method: "connect", id: "abc" });
+    socket.emit("close", 1000, Buffer.from(""));
+
+    expect(logWsControl.warn).toHaveBeenCalledWith(
+      expect.stringContaining("closed before connect"),
+      expect.objectContaining({ lastFrameMethod: "connect", remoteAddr: "8.8.8.8" }),
+    );
+  });
+
+  it("downgrades idle local preauth handshake timeouts to debug", async () => {
+    vi.useFakeTimers();
+    const { socket, logWsControl } = attachTestConnection("127.0.0.1");
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(logWsControl.debug).toHaveBeenCalledWith(expect.stringContaining("handshake timeout"));
+    expect(logWsControl.warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("handshake timeout"),
+    );
+    expect(socket.close).toHaveBeenCalledWith(1000, undefined);
+  });
 });

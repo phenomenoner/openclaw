@@ -214,6 +214,49 @@ describe("startChannelApprovalHandlerBootstrap", () => {
     await cleanup();
   });
 
+  it("retries normal gateway startup closes without logging them as errors", async () => {
+    vi.useFakeTimers();
+    const channelRuntime = createRuntimeChannel();
+    const start = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("gateway closed: 1000 "))
+      .mockResolvedValueOnce(undefined);
+    const stop = vi.fn().mockResolvedValue(undefined);
+    const logger = {
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn(),
+      isEnabled: vi.fn().mockReturnValue(true),
+      isVerboseEnabled: vi.fn().mockReturnValue(false),
+      verbose: vi.fn(),
+    };
+    createChannelApprovalHandlerFromCapability
+      .mockResolvedValueOnce({ start, stop })
+      .mockResolvedValueOnce({ start, stop });
+
+    const cleanup = await startTestBootstrap({ channelRuntime, logger });
+
+    registerApprovalContext(channelRuntime);
+    await flushTransitions();
+    await flushTransitions();
+
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(logger.debug).toHaveBeenCalledWith(
+      "failed to start native approval handler: Error: gateway closed: 1000 ",
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushTransitions();
+
+    expect(createChannelApprovalHandlerFromCapability).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenCalledTimes(2);
+
+    await cleanup();
+  });
+
   it("does not let a stale retry stop a newer active handler", async () => {
     vi.useFakeTimers();
     const channelRuntime = createRuntimeChannel();
