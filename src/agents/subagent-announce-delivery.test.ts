@@ -138,7 +138,7 @@ describe("resolveAnnounceOrigin threaded route targets", () => {
 });
 
 describe("deliverSubagentAnnouncement completion delivery", () => {
-  it("keeps completion announces session-internal while preserving route context for active requesters", async () => {
+  it("keeps completion announces queued/session-internal while preserving route context for active requesters", async () => {
     const callGateway = createGatewayMock();
     const queueEmbeddedPiMessage = vi.fn(() => true);
     const result = await deliverSlackThreadAnnouncement({
@@ -153,11 +153,25 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(result).toEqual(
       expect.objectContaining({
         delivered: true,
-        path: "steered",
+        path: "queued",
       }),
     );
-    expect(queueEmbeddedPiMessage).toHaveBeenCalledWith("requester-session-1", "child done");
-    expect(callGateway).not.toHaveBeenCalled();
+    expect(queueEmbeddedPiMessage).not.toHaveBeenCalled();
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "agent",
+        params: expect.objectContaining({
+          sessionKey: "agent:main:slack:channel:C123:thread:171.222",
+          message: expect.stringContaining("child done"),
+        }),
+      }),
+    );
+    expect(callGateway).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectFinal: true,
+      }),
+    );
   });
 
   it("keeps direct external delivery for dormant completion requesters", async () => {

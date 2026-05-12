@@ -14,7 +14,7 @@ export type SubagentAnnounceDeliveryResult = {
   phases?: SubagentAnnounceDispatchPhaseResult[];
 };
 
-export type SubagentAnnounceDispatchPhase = "queue-primary" | "direct-primary" | "queue-fallback";
+export type SubagentAnnounceDispatchPhase = "queue-primary" | "direct-primary" | "direct-fallback";
 
 export type SubagentAnnounceDispatchPhaseResult = {
   phase: SubagentAnnounceDispatchPhase;
@@ -90,22 +90,23 @@ export async function runSubagentAnnounceDispatch(params: {
     return withPhases(primaryDirect);
   }
 
-  const primaryDirect = await params.direct();
-  appendPhase("direct-primary", primaryDirect);
-  if (primaryDirect.delivered) {
-    return withPhases(primaryDirect);
+  const primaryQueueOutcome = await params.queue();
+  const primaryQueue = mapQueueOutcomeToDeliveryResult(primaryQueueOutcome);
+  appendPhase("queue-primary", primaryQueue);
+  if (primaryQueue.delivered) {
+    return withPhases(primaryQueue);
+  }
+  if (primaryQueueOutcome === "dropped") {
+    return withPhases(primaryQueue);
   }
 
+  // Completion announcements may wake a busy requester session; if cancellation lands after
+  // the queue attempt, do not fall back into a direct agent call that can self-deadlock.
   if (params.signal?.aborted) {
-    return withPhases(primaryDirect);
+    return withPhases(primaryQueue);
   }
 
-  const fallbackQueueOutcome = await params.queue();
-  const fallbackQueue = mapQueueOutcomeToDeliveryResult(fallbackQueueOutcome);
-  appendPhase("queue-fallback", fallbackQueue);
-  if (fallbackQueue.delivered) {
-    return withPhases(fallbackQueue);
-  }
-
-  return withPhases(primaryDirect);
+  const fallbackDirect = await params.direct();
+  appendPhase("direct-fallback", fallbackDirect);
+  return withPhases(fallbackDirect);
 }

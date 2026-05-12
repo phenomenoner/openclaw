@@ -746,7 +746,7 @@ function describeSubagentSeamKinds(relativePath, source) {
 
   if (
     (importsAnnounceDelivery || isAnnounceDispatchPath) &&
-    /\brunSubagentAnnounceFlow\b|\brunSubagentAnnounceDispatch\b|\benqueueAnnounce\b|\bcreateBoundDeliveryRouter\b|\bqueueEmbeddedPiMessage\b|\bwaitForEmbeddedPiRunEnd\b|\bqueue-fallback\b|\bdirect-primary\b/.test(
+    /\brunSubagentAnnounceFlow\b|\brunSubagentAnnounceDispatch\b|\benqueueAnnounce\b|\bcreateBoundDeliveryRouter\b|\bqueueEmbeddedPiMessage\b|\bwaitForEmbeddedPiRunEnd\b|\bdirect-primary\b|\bdirect-fallback\b/.test(
       source,
     )
   ) {

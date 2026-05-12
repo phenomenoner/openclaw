@@ -69,7 +69,7 @@ describe("runSubagentAnnounceDispatch", () => {
     ]);
   });
 
-  it("uses direct-first ordering for completion mode", async () => {
+  it("uses queue-first ordering for completion mode", async () => {
     const queue = vi.fn(async () => "queued" as const);
     const direct = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
 
@@ -79,21 +79,17 @@ describe("runSubagentAnnounceDispatch", () => {
       direct,
     });
 
-    expect(direct).toHaveBeenCalledTimes(1);
-    expect(queue).not.toHaveBeenCalled();
-    expect(result.path).toBe("direct");
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(direct).not.toHaveBeenCalled();
+    expect(result.path).toBe("queued");
     expect(result.phases).toEqual([
-      { phase: "direct-primary", delivered: true, path: "direct", error: undefined },
+      { phase: "queue-primary", delivered: true, path: "queued", error: undefined },
     ]);
   });
 
-  it("falls back to queue when completion direct send fails", async () => {
+  it("short-circuits direct send when completion queue steers", async () => {
     const queue = vi.fn(async () => "steered" as const);
-    const direct = vi.fn(async () => ({
-      delivered: false,
-      path: "direct" as const,
-      error: "network",
-    }));
+    const direct = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
 
     const result = await runSubagentAnnounceDispatch({
       expectsCompletionMessage: true,
@@ -101,16 +97,34 @@ describe("runSubagentAnnounceDispatch", () => {
       direct,
     });
 
-    expect(direct).toHaveBeenCalledTimes(1);
     expect(queue).toHaveBeenCalledTimes(1);
+    expect(direct).not.toHaveBeenCalled();
     expect(result.path).toBe("steered");
     expect(result.phases).toEqual([
-      { phase: "direct-primary", delivered: false, path: "direct", error: "network" },
-      { phase: "queue-fallback", delivered: true, path: "steered", error: undefined },
+      { phase: "queue-primary", delivered: true, path: "steered", error: undefined },
     ]);
   });
 
-  it("returns direct failure when completion fallback queue cannot deliver", async () => {
+  it("falls back to direct when completion queue cannot deliver", async () => {
+    const queue = vi.fn(async () => "none" as const);
+    const direct = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
+
+    const result = await runSubagentAnnounceDispatch({
+      expectsCompletionMessage: true,
+      queue,
+      direct,
+    });
+
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(direct).toHaveBeenCalledTimes(1);
+    expect(result.path).toBe("direct");
+    expect(result.phases).toEqual([
+      { phase: "queue-primary", delivered: false, path: "none", error: undefined },
+      { phase: "direct-fallback", delivered: true, path: "direct", error: undefined },
+    ]);
+  });
+
+  it("returns direct failure when completion queue cannot deliver and direct fails", async () => {
     const queue = vi.fn(async () => "none" as const);
     const direct = vi.fn(async () => ({
       delivered: false,
@@ -130,9 +144,28 @@ describe("runSubagentAnnounceDispatch", () => {
       error: "failed",
     });
     expect(result.phases).toEqual([
-      { phase: "direct-primary", delivered: false, path: "direct", error: "failed" },
-      { phase: "queue-fallback", delivered: false, path: "none", error: undefined },
+      { phase: "queue-primary", delivered: false, path: "none", error: undefined },
+      { phase: "direct-fallback", delivered: false, path: "direct", error: "failed" },
     ]);
+  });
+
+  it("does not fall through to direct delivery when completion queue drops the new item", async () => {
+    const queue = vi.fn(async () => "dropped" as const);
+    const direct = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
+
+    const result = await runSubagentAnnounceDispatch({
+      expectsCompletionMessage: true,
+      queue,
+      direct,
+    });
+
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(direct).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      delivered: false,
+      path: "none",
+      phases: [{ phase: "queue-primary", delivered: false, path: "none", error: undefined }],
+    });
   });
 
   it("does not fall through to direct delivery when non-completion queue drops the new item", async () => {
@@ -154,17 +187,13 @@ describe("runSubagentAnnounceDispatch", () => {
     });
   });
 
-  it("preserves direct failure when completion dispatch aborts before fallback queue", async () => {
+  it("does not fall through to direct delivery when completion dispatch aborts after queue", async () => {
     const controller = new AbortController();
-    const queue = vi.fn(async () => "queued" as const);
-    const direct = vi.fn(async () => {
+    const queue = vi.fn(async () => {
       controller.abort();
-      return {
-        delivered: false,
-        path: "direct" as const,
-        error: "direct failed before abort",
-      };
+      return "none" as const;
     });
+    const direct = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
 
     const result = await runSubagentAnnounceDispatch({
       expectsCompletionMessage: true,
@@ -173,20 +202,14 @@ describe("runSubagentAnnounceDispatch", () => {
       direct,
     });
 
-    expect(direct).toHaveBeenCalledTimes(1);
-    expect(queue).not.toHaveBeenCalled();
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(direct).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       delivered: false,
-      path: "direct",
-      error: "direct failed before abort",
+      path: "none",
     });
     expect(result.phases).toEqual([
-      {
-        phase: "direct-primary",
-        delivered: false,
-        path: "direct",
-        error: "direct failed before abort",
-      },
+      { phase: "queue-primary", delivered: false, path: "none", error: undefined },
     ]);
   });
 
